@@ -15,6 +15,7 @@ const output = await build({
       export const getTrackPlaybackUrl = t => globalThis.nativeTest.resolve(t);
       export const getTrackPlaybackPlan = async (t,r) => globalThis.iosTest?.plan ? globalThis.iosTest.plan(t,r) : ({url:await getTrackPlaybackUrl(t,r)});
     ` : path === 'platform' ? 'export const isOHOS = false; export const isAndroid = true; export const isMobile = true; export const isIOS = false' : `
+      export const syncAndroidQueue = async (...args) => globalThis.nativeTest.queues.push(args);
       export const setAndroidCollection = async () => {};
       export const observeAndroidAudio = cb => { globalThis.nativeTest.event = state => { globalThis.nativeTest.state = state; cb(state) }; return Promise.resolve() };
       export const snapshotAndroidAudio = async () => globalThis.nativeTest.state || ({});
@@ -30,7 +31,7 @@ function setup() {
   globalThis.document = { addEventListener() {} }
   globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
   globalThis.Audio = class { constructor() { throw new Error('Android must not create WebView audio') } }
-  globalThis.nativeTest = { controls: [], plays: [], resolve: async t => `http://127.0.0.1:1234/token/${t.id}` }
+  globalThis.nativeTest = { controls: [], plays: [], queues: [], resolve: async t => `http://127.0.0.1:1234/token/${t.id}` }
   const m = { exports: {} }; new Function('require', 'module', 'exports', output.outputFiles[0].text)(createRequire(import.meta.url), m, m.exports)
   return m.exports.usePlayerStore
 }
@@ -90,4 +91,31 @@ test('system navigation changes the Android queue and late commands for a previo
  const plays=nativeTest.plays.length
  nativeTest.event({id:track.id,revision:50,sequence:10,action:'previous'})
  await Promise.resolve();assert.equal(store.getState().current.id,second.id);assert.equal(nativeTest.plays.length,plays)
+})
+
+
+test('Android hands queue and resume policy to its service before playback', async () => {
+ const s=setup(),second={...track,id:'bilibili:BV123:2',source:{...track.source,cid:2,page:2}}
+ await s.getState().playFromList([track,second],track.id)
+ assert.deepEqual(nativeTest.queues.at(-1)[0].map(t=>t.id),[track.id,second.id])
+ s.getState().setResumeThreshold(600);await Promise.resolve();await Promise.resolve()
+ assert.equal(nativeTest.queues.at(-1)[3],600)
+})
+test('Android adopts native background transitions without resolving or playing twice', async () => {
+ const s=setup(),second={...track,id:'bilibili:BV123:2',title:'second',source:{...track.source,cid:2,page:2}}
+ await s.getState().playFromList([track,second],track.id)
+ nativeTest.event({id:track.id,status:'playing',position:100,stopped:false})
+ nativeTest.event({id:second.id,track:second,status:'buffering',stopped:true})
+ assert.equal(s.getState().current.id,second.id)
+ nativeTest.event({id:second.id,track:second,status:'playing',position:5,duration:120,stopped:false})
+ assert.equal(s.getState().progressSeconds,5);assert.equal(s.getState().status,'playing')
+ assert.equal(nativeTest.plays.length,1)
+})
+test('Android accepts expanded background collection parts and avoids a second recovery', async () => {
+ const s=setup(),entry={...track,id:'entry',resolveParts:true},part={...track,id:'part2',source:{...track.source,cid:2,page:2}}
+ s.setState({queue:[entry],current:entry,status:'playing'})
+ nativeTest.event({id:part.id,track:part,expandedEntries:{entry:[track,part]},status:'playing',position:1,stopped:false})
+ assert.deepEqual(s.getState().queue.map(t=>t.id),[track.id,part.id])
+ nativeTest.event({id:part.id,track:part,status:'error',error:'音频缓冲超时，请重试',stopped:true,recoveryAttempted:true})
+ assert.equal(nativeTest.plays.length,0);assert.equal(s.getState().status,'error')
 })

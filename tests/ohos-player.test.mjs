@@ -394,3 +394,15 @@ test('manual pause, track changes and quality choices take priority over pending
   const manual=h.plugin.player;manual.currentTime=2000;h.plugin.maybeUpgrade();await h.plugin.tasks;assert.equal(h.plugin.player,manual);assert.equal(manual.source,'http://127.0.0.1:1234/manual')
  }finally{await h.plugin.destroy()}
 })
+
+test('Harmony decides resume from prepared media duration and preserves pause/resume after settings change',async()=>{
+ for(const [threshold,listed,position,expected] of [[120,0,85,85],[600,1800,85,0],[null,1800,85,0],[0,0,85,85]]) {
+  const h=setup()
+  try {
+   const reply=await h.command('play',{id:'song',url:'http://127.0.0.1:1234/media',position,automaticResume:{enabled:threshold!==null,thresholdSeconds:threshold??0,collection:false,durationSeconds:listed}})
+   assert.equal(reply.ok,true);assert.equal(h.player.currentTime,expected*1000)
+   await h.command('control',{action:'pause'});await h.command('control',{action:'resume'})
+   assert.equal(h.player.currentTime,expected*1000)
+  }finally{await h.plugin.destroy()}
+ }
+})

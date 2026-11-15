@@ -2,6 +2,7 @@ fn main() {
     tauri_plugin::Builder::new(&[
         "lyrics",
         "play",
+        "queue",
         "control",
         "snapshot",
         "register_listener",

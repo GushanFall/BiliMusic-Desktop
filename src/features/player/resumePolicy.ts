@@ -2,6 +2,7 @@ import type { Track } from '../../domain/track'
 
 // null disables single-video resume; zero resumes videos of any duration.
 export type ResumeThreshold = number | null
+export type AutomaticResumePolicy = { enabled: boolean; thresholdSeconds: number; collection: boolean; durationSeconds: number }
 export const MAX_RESUME_MINUTES = 60
 export const RESUME_SLIDER_MAX = MAX_RESUME_MINUTES + 1
 
@@ -28,6 +29,19 @@ export function resumeThresholdLabel(threshold: ResumeThreshold) {
 
 export function shouldResumeVideo(threshold: ResumeThreshold, duration: number, collection = false) {
   return collection || threshold !== null && (threshold === 0 || Number.isFinite(duration) && duration >= threshold)
+}
+
+export function automaticResumePolicy(threshold: ResumeThreshold, durationSeconds: number, collection: boolean): AutomaticResumePolicy {
+  return { enabled: threshold !== null, thresholdSeconds: threshold ?? 0, collection, durationSeconds }
+}
+
+// Called only once the player's metadata is ready. Its actual media duration
+// takes precedence over search results and restored UI metadata.
+export function automaticResumePosition(position: number, mediaDuration: number, policy: AutomaticResumePolicy) {
+  const duration = Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : policy.durationSeconds
+  if (position >= 1 && policy.enabled && !policy.collection && policy.thresholdSeconds > 0 && !(Number.isFinite(duration) && duration > 0)) throw new Error('无法读取视频总时长，请重新播放')
+  return shouldResumeVideo(policy.enabled ? policy.thresholdSeconds : null, duration, policy.collection) &&
+    Number.isFinite(position) && position >= 1 && (!Number.isFinite(duration) || duration <= 0 || position < duration - 1) ? position : 0
 }
 
 export function isCollectionPlayback(track: Track, queue: Track[], source?: { kind: string; collectionRef?: string }) {

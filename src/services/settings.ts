@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
-import { isMobile } from './platform'
+import { isMobile, isAndroid } from './platform'
+import { androidDownloadDestination } from './androidDownloads'
 import { open } from '@tauri-apps/plugin-dialog'
 import { load } from '@tauri-apps/plugin-store'
 
@@ -12,6 +13,7 @@ export async function getDownloadDirectory() {
 }
 
 export async function chooseDownloadDirectory() {
+  if (isAndroid) { const result = await androidDownloadDestination('choose'); return result.cancelled ? '' : getDownloadDirectory() }
   if (isMobile) return getDownloadDirectory()
   const selected = await open({ directory: true, multiple: false, title: '选择音乐下载目录' })
   if (!selected) return ''

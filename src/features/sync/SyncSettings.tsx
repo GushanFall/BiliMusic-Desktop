@@ -1,3 +1,4 @@
+import { syncErrorMessage } from '../../services/userErrors'
 import { useSyncAttention, clearSyncAttention, reportSyncError } from '../../services/syncAttention'
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -6,7 +7,7 @@ import { Check, ChevronDown, Cloud, LoaderCircle, RefreshCw } from 'lucide-react
 import { ActionMenu } from '../../shared/ActionMenu'
 import { SyncDevices } from './SyncDevices'
 import { SyncConflicts } from './SyncConflicts'
-import { commandErrorMessage, inDesktopShell } from '../../services/desktopApi'
+import { inDesktopShell } from '../../services/desktopApi'
 import { defaultSyncConfig, refreshSyncedLibrary, syncNow, syncStatus, type SyncConfig, type SyncOutcome } from '../../services/sync'
 
 function syncTime(value?: string) {
@@ -32,7 +33,7 @@ export function SyncSettings({embedded=false}:{embedded?:boolean}={}) {
   const notify = () => window.dispatchEvent(new Event('bilimusic-sync-configured'))
   const action = async (fn: () => Promise<void>) => {
     setBusy(true); setMessage('')
-    try { await fn() } catch (e) { setMessage(commandErrorMessage(e)) }
+    try { await fn() } catch (e) { setMessage(syncErrorMessage(e)) }
     finally { await status.refetch(); setBusy(false) }
   }
   const applyOutcome = async (result: SyncOutcome) => {
@@ -41,7 +42,7 @@ export function SyncSettings({embedded=false}:{embedded?:boolean}={}) {
     await refreshSyncedLibrary(client)
     setOutcome(null); setMessage('同步完成'); notify()
     try { await invoke('listening_sync'); reportSyncError('statistics', false); await client.invalidateQueries({queryKey:['listening-statistics']}) }
-    catch(e) { reportSyncError('statistics', true); setMessage(`资料已同步，听歌统计尚未完成：${commandErrorMessage(e)}`) }
+    catch(e) { reportSyncError('statistics', true); setMessage(`资料已同步，听歌统计尚未完成：${syncErrorMessage(e)}`) }
     void invoke<number>('sync_hydrate_sources').then(() => refreshSyncedLibrary(client)).catch(() => undefined)
   }
   const connect = () => action(async () => {
@@ -87,7 +88,7 @@ export function SyncSettings({embedded=false}:{embedded?:boolean}={}) {
         </fieldset>
       </form>}
       {outcome && <div className="sync-preview"><strong>{outcome.conflicts.length ? `有 ${outcome.conflicts.length} 处修改需要确认` : '资料已准备好合并'}</strong><p>{outcome.records} 条资料 · 首次同步前自动保留本机备份</p>{outcome.conflicts.length ? <SyncConflicts conflicts={outcome.conflicts} busy={busy} onMerge={resolution => void merge(resolution)} /> : <button className="sync-primary" disabled={busy || !saved?.enabled} onClick={() => void merge()}>确认合并并同步</button>}</div>}
-      {(message || status.error) && <p className="sync-message" role="status">{message || commandErrorMessage(status.error)}</p>}
+      {(message || status.error) && <p className="sync-message" role="status">{message || syncErrorMessage(status.error)}</p>}
       {connected && saved?.provider === 'webdav' && saved.initialized && <SyncDevices />}
       <details className="sync-more"><summary>资料管理与隐私</summary><div className="sync-more-content">
         {saved?.uid && <>

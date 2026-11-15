@@ -8,6 +8,10 @@ mod infrastructure;
 mod interface;
 #[cfg(target_os = "ios")]
 mod ios_playback;
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+mod native_playback;
+#[cfg(target_os = "android")]
+mod android_playback;
 #[cfg(desktop)]
 mod mini_player;
 #[cfg(target_env = "ohos")]
@@ -98,7 +102,10 @@ pub fn run() {
             #[cfg(target_os = "ios")]
             ios_playback::initialize(app.handle().clone());
             #[cfg(target_os = "android")]
-            interface::media::observe_android_listening(app.handle().clone());
+            {
+                interface::media::observe_android_listening(app.handle().clone());
+                android_playback::initialize(app.handle().clone());
+            }
             #[cfg(target_env = "ohos")]
             {
                 ohos_playback::initialize(app.handle().clone());
@@ -256,7 +263,9 @@ pub fn run() {
             interface::commands::lyrics_save,
             interface::commands::lyrics_set_bias,
             interface::commands::mobile_download_directory,
-            #[cfg(target_os = "ios")]
+            #[cfg(target_os = "android")]
+            interface::commands::android_download_destination,
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             interface::commands::mobile_export_download,
             interface::commands::downloads_list,
             interface::commands::download_remove,

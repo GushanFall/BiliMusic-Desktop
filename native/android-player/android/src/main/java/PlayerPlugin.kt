@@ -1,6 +1,8 @@
 package app.bilimusic.player
 
 import android.app.Activity
+import androidx.activity.result.ActivityResult
+import app.tauri.annotation.ActivityCallback
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import androidx.core.view.WindowCompat
@@ -29,6 +31,7 @@ class PlayArgs {
     var upgradeUrl: String? = null
     var rate: Double = 1.0
     var collectionRef: String? = null
+    var automaticResume: AutomaticResumePolicy? = null
 }
 @InvokeArg
 class LyricsArgs { var data: String = "{}" }
@@ -55,9 +58,61 @@ class ListeningArgs {
     lateinit var channel: Channel
     lateinit var profilePath: String
 }
+@InvokeArg
+class ResolvedArgs { var request: Long = 0; var data: String = "{}" }
+
+@InvokeArg
+class DownloadPathArgs { lateinit var path: String }
 
 @TauriPlugin
 class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
+    private val downloadStorage by lazy { DownloadStorage(activity.applicationContext) }
+    private val downloadWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    // These storage commands are called by Rust only; they have no WebView ACL grant.
+    @Command
+    fun download_destination(invoke: Invoke) { invoke.resolve(downloadStorage.status()) }
+
+    @Command
+    fun choose_download_destination(invoke: Invoke) {
+        activity.runOnUiThread {
+            try { startActivityForResult(invoke, downloadStorage.pickerIntent(), "downloadDestinationChosen") }
+            catch (_: Exception) { invoke.reject("无法打开系统文件夹选择器") }
+        }
+    }
+
+    @ActivityCallback
+    fun downloadDestinationChosen(invoke: Invoke, result: ActivityResult) {
+        val uri = result.data?.data
+        if (result.resultCode != Activity.RESULT_OK || uri == null) {
+            invoke.resolve(downloadStorage.status().put("cancelled", true)); return
+        }
+        downloadWorker.execute {
+            try {
+                downloadStorage.select(uri, result.data?.flags ?: 0)
+                invoke.resolve(downloadStorage.status())
+            } catch (error: Exception) { invoke.reject(error.message ?: "无法使用这个文件夹，请重新选择") }
+        }
+    }
+
+    @Command
+    fun reset_download_destination(invoke: Invoke) {
+        try { downloadStorage.reset(); invoke.resolve(downloadStorage.status()) }
+        catch (_: Exception) { invoke.reject("无法恢复默认目录，请重新选择文件夹") }
+    }
+
+    @Command
+    fun save_download(invoke: Invoke) {
+        val args = invoke.parseArgs(DownloadPathArgs::class.java)
+        downloadWorker.execute {
+            try { downloadStorage.save(args.path); invoke.resolve() }
+            catch (error: Exception) {
+                invoke.reject(if (error is SecurityException) "保存文件夹的授权已失效，请在设置中重新选择下载目录"
+                    else error.message ?: "保存失败，请检查文件夹权限与剩余空间")
+            }
+        }
+    }
+
     @Command
     fun lyrics(invoke: Invoke) {
         val args=invoke.parseArgs(LyricsArgs::class.java)
@@ -109,6 +164,37 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
         PlaybackService.profilePath = args.profilePath
         PlaybackService.listeningListener = { event -> args.channel.send(event) }
         invoke.resolve()
+    }
+    // Registered by Rust directly; neither command is exposed to the WebView ACL.
+    @Command
+    fun observe_playback(invoke: Invoke) {
+        val args = invoke.parseArgs(ListeningArgs::class.java)
+        PlaybackService.profilePath = args.profilePath
+        PlaybackService.resolveListener = { request, payload ->
+            args.channel.send(JSObject().put("request", request).put("payload", payload))
+        }
+        invoke.resolve()
+    }
+    @Command
+    fun resolved(invoke: Invoke) {
+        val args = invoke.parseArgs(ResolvedArgs::class.java)
+        activity.runOnUiThread {
+            PlaybackService.instance?.resolved(args.request, org.json.JSONObject(args.data))
+            invoke.resolve()
+        }
+    }
+    @Command
+    fun queue(invoke: Invoke) {
+        val args = invoke.parseArgs(LyricsArgs::class.java)
+        activity.runOnUiThread {
+            try {
+                // Validate even when no service has been started yet.
+                NativeQueue().update(org.json.JSONObject(args.data))
+                PlaybackService.queueData = args.data
+                PlaybackService.instance?.updateQueue(args.data)
+                invoke.resolve()
+            } catch (_: Exception) { invoke.reject("无效的播放队列") }
+        }
     }
 
     private var previousOrientation: Int? = null
@@ -193,6 +279,8 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             })
         PlaybackService.listener = { event -> trigger("state", event) }
+        PlaybackService.controllerListener = { controller -> activity.mediaController = controller }
+        PlaybackService.instance?.attachController()
     }
     // Match the snake_case commands used by the current Tauri JS SDK. The inherited
     // camelCase methods alone are not declared in this plugin's generated ACL.
@@ -219,6 +307,11 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
             .putExtra("title", args.title).putExtra("artist", args.artist)
             .putExtra("coverUrl", args.coverUrl).putExtra("collectionRef", args.collectionRef)
             .putExtra("position", args.position).putExtra("volume", args.volume).putExtra("playing", args.playing).putExtra("rate", args.rate)
+        args.automaticResume?.let { policy ->
+            intent.putExtra("automaticResume", true).putExtra("resumeEnabled", policy.enabled)
+                .putExtra("resumeThreshold", policy.thresholdSeconds).putExtra("resumeCollection", policy.collection)
+                .putExtra("resumeDuration", policy.durationSeconds)
+        }
         activity.startForegroundService(intent)
         invoke.resolve()
     }

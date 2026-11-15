@@ -1,8 +1,9 @@
 import { createNativeClock } from './nativeClock'
 import { addPluginListener, invoke } from '@tauri-apps/api/core'
 import type { Track } from '../../domain/track'
+import type { AutomaticResumePolicy } from './resumePolicy'
 
-type State = { sleepDeadline?: number; sleepDuration?: number; sleepExpired?: boolean; revision?: number; sequence?: number; seekRevision?: number; stopped?: boolean; floatingLyricsEnabled?: boolean; floatingLyricsFontSize?: number; floatingLyricsStyleRevision?: number; floatingLyricsLocked?: boolean; id?: string; status?: 'playing' | 'paused' | 'buffering' | 'error'; position?: number; rate?: number; duration?: number; error?: string; action?: 'next' | 'previous' | 'ended' | 'resume' }
+type State = { track?: Track; expandedEntries?: Record<string, Track[]>; recoveryAttempted?: boolean; sleepDeadline?: number; sleepDuration?: number; sleepExpired?: boolean; revision?: number; sequence?: number; seekRevision?: number; stopped?: boolean; floatingLyricsEnabled?: boolean; floatingLyricsFontSize?: number; floatingLyricsStyleRevision?: number; floatingLyricsLocked?: boolean; id?: string; status?: 'playing' | 'paused' | 'buffering' | 'error'; position?: number; rate?: number; duration?: number; error?: string; action?: 'next' | 'previous' | 'ended' | 'resume' }
 export function createNativeAudio(plugin: string, bind?: (callback: (state: State) => void) => Promise<unknown>) {
   let ready: Promise<unknown> | undefined
   let consumer: (state: State) => void = () => undefined
@@ -28,9 +29,9 @@ export function createNativeAudio(plugin: string, bind?: (callback: (state: Stat
     if (!ready) ready = (bind ? bind(receive) : addPluginListener<State>(plugin, 'state', receive)).catch((error) => { ready = undefined; throw error })
     return ready
   }
-  async function play(track: Track, url: string, position: number, volume: number, playing = true, collectionRef?: string, rate = 1, seamless = false, upgradeUrl?: string) {
+  async function play(track: Track, url: string, position: number, volume: number, playing = true, collectionRef?: string, rate = 1, seamless = false, upgradeUrl?: string, automaticResume?: AutomaticResumePolicy) {
     await ready
-    await invoke(`plugin:${plugin}|play`, { url, id: track.id, title: track.title, artist: track.artist || '歌手未知', coverUrl: track.coverUrl, position, volume, playing, collectionRef, rate, ...(seamless?{seamless:true}:{}), ...(upgradeUrl?{upgradeUrl}:{}) })
+    await invoke(`plugin:${plugin}|play`, { url, id: track.id, title: track.title, artist: track.artist || '歌手未知', coverUrl: track.coverUrl, position, volume, playing, collectionRef, rate, ...(seamless?{seamless:true}:{}), ...(upgradeUrl?{upgradeUrl}:{}), ...(automaticResume?{automaticResume}:{}) })
   }
   const setCollection = (id: string, collectionRef?: string) => invoke(`plugin:${plugin}|control`, { action: 'collection', id, collectionRef })
   const control = (action: string, value = 0) => invoke(`plugin:${plugin}|control`, { action, value })

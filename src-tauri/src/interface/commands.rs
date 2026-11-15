@@ -1069,7 +1069,18 @@ pub fn mobile_download_directory(app: tauri::AppHandle) -> Result<String, Comman
     Ok(directory.to_string_lossy().into_owned())
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn android_download_destination(
+    app: tauri::AppHandle,
+    action: String,
+) -> Result<serde_json::Value, CommandError> {
+    tauri_plugin_android_player::download_destination(&app, &action)
+        .await
+        .map_err(CommandError::provider)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn mobile_export_download(
     app: tauri::AppHandle,
@@ -1106,9 +1117,14 @@ pub async fn mobile_export_download(
     if !path.starts_with(directory) || !path.is_file() {
         return Err(CommandError::validation("下载文件不可用"));
     }
-    tauri_plugin_ios_player::export_download(&app, &path)
+    #[cfg(target_os = "ios")]
+    return tauri_plugin_ios_player::export_download(&app, &path)
         .await
-        .map_err(CommandError::database)
+        .map_err(CommandError::database);
+    #[cfg(target_os = "android")]
+    tauri_plugin_android_player::save_download(&app, &path)
+        .await
+        .map_err(CommandError::provider)
 }
 
 #[tauri::command]
@@ -1150,6 +1166,16 @@ pub async fn download_track(
     }
     #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
     let _ = app;
+    #[cfg(target_os = "android")]
+    if !tauri_plugin_android_player::download_destination(&app, "status")
+        .await
+        .map_err(CommandError::provider)?
+        .get("available")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Err(CommandError::validation("请先选择或重新授权下载目录"));
+    }
     let expected_profile = crate::interface::media::profile(&database);
     let requested_audio = audio_id.unwrap_or(0);
     if requested_audio > 40000 {
@@ -1298,6 +1324,10 @@ pub async fn download_track(
         } else {
             tokio::fs::rename(&temporary, &target).await?;
         }
+        #[cfg(target_os = "android")]
+        tauri_plugin_android_player::save_download(&app, &target)
+            .await
+            .map_err(std::io::Error::other)?;
         Ok(received)
     }
     .await;

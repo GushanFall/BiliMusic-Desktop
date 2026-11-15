@@ -1,8 +1,8 @@
 #[cfg(target_os = "android")]
 use tauri::Manager;
 use tauri::{
-    Runtime,
     plugin::{Builder, TauriPlugin},
+    Runtime,
 };
 #[cfg(target_os = "android")]
 struct Credentials<R: Runtime>(tauri::plugin::PluginHandle<R>);
@@ -42,6 +42,68 @@ pub async fn observe_listening<R: Runtime>(
         )
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "android")]
+pub async fn observe_playback<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    profile_path: &std::path::Path,
+    channel: tauri::ipc::Channel<serde_json::Value>,
+) -> Result<(), String> {
+    app.state::<Credentials<R>>()
+        .0
+        .run_mobile_plugin_async::<()>(
+            "observe_playback",
+            serde_json::json!({"profilePath":profile_path,"channel":channel}),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "android")]
+pub async fn resolved<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: i64,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    app.state::<Credentials<R>>()
+        .0
+        .run_mobile_plugin_async::<()>(
+            "resolved",
+            serde_json::json!({"request":request,"data":value.to_string()}),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "android")]
+pub async fn download_destination<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    action: &str,
+) -> Result<serde_json::Value, String> {
+    let command = match action {
+        "status" => "download_destination",
+        "choose" => "choose_download_destination",
+        "reset" => "reset_download_destination",
+        _ => return Err("无效的下载目录操作".into()),
+    };
+    app.state::<Credentials<R>>()
+        .0
+        .run_mobile_plugin_async(command, serde_json::json!({}))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "android")]
+pub async fn save_download<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    app.state::<Credentials<R>>()
+        .0
+        .run_mobile_plugin_async::<()>("save_download", serde_json::json!({"path":path}))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {

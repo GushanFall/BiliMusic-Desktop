@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 
 export async function readPlaybackPosition(id: string) {
-  return isTauri() ? invoke<number>('playback_position', { trackId: id }).catch(() => 0) : 0
+  return isTauri() ? invoke<number>('playback_position', { trackId: id }) : 0
 }
 
 export function playbackPositionScope() {

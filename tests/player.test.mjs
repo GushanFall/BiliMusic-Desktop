@@ -12,7 +12,7 @@ const output = await build({
     builder.onLoad({ filter: /.*/, namespace: 'test' }, ({path}) => ({ contents: path === 'position-api' ? `
       export const isTauri = () => true;
       export const invoke = async (command,args) => command === 'listening_scope' ? 'scope'
-        : args.seconds === undefined ? globalThis.testApi.positions.get(args.trackId) || 0 : undefined;
+        : args.seconds === undefined ? globalThis.testApi.readPosition ? globalThis.testApi.readPosition(args.trackId) : globalThis.testApi.positions.get(args.trackId) || 0 : globalThis.testApi.writes.push(args);
     ` : `
       export const inDesktopShell = true;
       export const recordPlayedTrack = track => globalThis.testApi.record(track);
@@ -30,16 +30,18 @@ function setup(snapshot) {
   globalThis.window = { addEventListener: (name, callback) => { listeners[name] = callback }, dispatchEvent() {} }
   globalThis.localStorage = { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) }
   globalThis.Audio = class {
-    src = ''; currentTime = 0; volume = 1; duration = 120; callbacks = {}; plays = 0; readyState = 3; seeking = false; paused = true
+    src = ''; currentTime = 0; volume = 1; callbacks = {}; plays = 0; readyState = globalThis.testApi?.readyState ?? 3; seeking = false; paused = true
+    get duration() { return globalThis.testApi.mediaDuration ?? globalThis.testApi.trackDuration ?? 120 }
     constructor() { audio.push(this) }
-    addEventListener(name, callback) { this.callbacks[name] = callback }
-    removeEventListener(name, callback) { if(this.callbacks[name]===callback)delete this.callbacks[name] }
+    handlers = new Map()
+    addEventListener(name, callback) { if(!this.handlers.has(name))this.handlers.set(name,new Set());this.handlers.get(name).add(callback);this.callbacks[name]=()=>{for(const fn of [...this.handlers.get(name)])fn()} }
+    removeEventListener(name, callback) { this.handlers.get(name)?.delete(callback) }
     pause() { this.paused = true; this.callbacks.pause?.() }
     load() {}
     removeAttribute() { this.src = '' }
     async play() { this.paused = false; this.plays++; this.callbacks.playing?.() }
   }
-  globalThis.testApi = { positions:new Map(), record: async track => track, resolve: async track => `local://${track.id}` }
+  globalThis.testApi = { writes:[], positions:new Map(snapshot?.state?.current ? [[snapshot.state.current.id,snapshot.state.progressSeconds || 0]] : []), record: async track => { globalThis.testApi.trackDuration=track.durationSeconds; return track }, resolve: async track => `local://${track.id}` }
   const module = { exports: {} }
   new Function('require', 'module', 'exports', output.outputFiles[0].text)(createRequire(import.meta.url), module, module.exports)
   return { store: module.exports.usePlayerStore, audio, listeners, storage }
@@ -308,4 +310,77 @@ test('pausing before audible progress defers automatic desktop quality preparati
  await store.getState().play(track('1'),0);await store.getState().toggle()
  audio[0].currentTime=2;audio[0].callbacks.timeupdate();await new Promise(setImmediate);assert.equal(audio.length,1)
  await store.getState().toggle();audio[0].callbacks.timeupdate();await new Promise(setImmediate);assert.equal(audio[1].src,'local://high');listeners.pagehide()
+})
+
+test('automatic resume compares prepared video total duration even when list metadata is missing or wrong', async () => {
+ for (const [listed, actual, expected] of [[0,1800,85],[1800,300,0],[120,1800,85],[0,600,85],[1800,599,0]]) {
+  const {store,audio,listeners}=setup();store.getState().setResumeThreshold(600)
+  testApi.mediaDuration=actual;testApi.positions.set('1',85)
+  await store.getState().play({...track('1'),durationSeconds:listed})
+  assert.equal(audio[0].currentTime,expected,`listed=${listed}, total=${actual}`)
+  listeners.pagehide()
+ }
+})
+
+test('reopening and reselecting use the same local checkpoint instead of the persisted UI snapshot', async () => {
+ for (const saved of [110,0]) {
+  const current=track('1');const {store,audio,listeners}=setup({state:{current,queue:[current],progressSeconds:85,durationSeconds:120},version:0})
+  testApi.positions.set(current.id,saved)
+  await store.getState().toggle();assert.equal(audio[0].currentTime,saved)
+  listeners.pagehide()
+ }
+})
+
+test('automatic resume waits for metadata and initial seek before starting audio', async () => {
+ const {store,audio,listeners}=setup();testApi.readyState=0;testApi.mediaDuration=0;testApi.positions.set('1',85);store.getState().setResumeThreshold(600)
+ const playing=store.getState().play({...track('1'),durationSeconds:0});await new Promise(setImmediate)
+ const element=audio[0];assert.equal(element.plays,0)
+ testApi.mediaDuration=1800;element.readyState=1;element.seeking=true;element.callbacks.loadedmetadata()
+ await new Promise(setImmediate);assert.equal(element.currentTime,85);assert.equal(element.plays,0)
+ element.seeking=false;element.callbacks.seeked();await playing
+ assert.equal(element.plays,1);assert.equal(store.getState().progressSeconds,85)
+ listeners.pagehide()
+})
+
+test('pausing during metadata preparation cancels the pending automatic start', async () => {
+ const {store,audio,listeners}=setup();testApi.readyState=0;testApi.positions.set('1',85)
+ const playing=store.getState().play(track('1'));await new Promise(setImmediate)
+ await store.getState().toggle();audio[0].readyState=1;audio[0].callbacks.loadedmetadata();await playing
+ assert.equal(audio[0].plays,0);assert.equal(store.getState().status,'paused');listeners.pagehide()
+})
+
+test('retrying automatic source resolution retains the duration policy', async () => {
+ const {store,audio,listeners}=setup();store.getState().setResumeThreshold(600);testApi.positions.set('1',85);testApi.mediaDuration=120
+ let calls=0;testApi.plan=async()=>{if(++calls===1)throw new Error('Network error');return {url:'local://1'}}
+ await store.getState().play({...track('1'),durationSeconds:1800});await new Promise(setImmediate)
+ assert.equal(calls,2);assert.equal(audio[0].currentTime,0);listeners.pagehide()
+})
+
+test('a failed local checkpoint read does not silently restart and replace the saved progress', async () => {
+ const {store,audio,listeners}=setup();testApi.readPosition=async()=>{throw new Error('Database busy')}
+ await store.getState().play(track('1'))
+ assert.equal(store.getState().status,'error');assert.equal(audio.length,0);listeners.pagehide()
+})
+
+test('pausing an initial seek never persists zero over the previous checkpoint, and retry reads it again',async()=>{
+ const {store,audio,listeners}=setup();testApi.readyState=0;testApi.positions.set('1',85)
+ const pending=store.getState().play(track('1'));await new Promise(setImmediate)
+ await store.getState().toggle();await new Promise(setImmediate)
+ assert.equal(testApi.writes.length,0)
+ audio[0].readyState=1;audio[0].callbacks.loadedmetadata();await pending
+ await store.getState().toggle();assert.equal(audio[0].currentTime,85);listeners.pagehide()
+})
+
+test('a duration reported after loadedmetadata is awaited rather than treating an unknown video as short',async()=>{
+ const {store,audio,listeners}=setup();testApi.readyState=0;testApi.mediaDuration=0;testApi.positions.set('1',85);store.getState().setResumeThreshold(600)
+ const pending=store.getState().play({...track('1'),durationSeconds:0});await new Promise(setImmediate)
+ audio[0].readyState=1;audio[0].callbacks.loadedmetadata();await new Promise(setImmediate)
+ assert.equal(audio[0].plays,0);testApi.mediaDuration=1800;audio[0].callbacks.loadedmetadata()
+ await pending;assert.equal(audio[0].currentTime,85);listeners.pagehide()
+})
+
+test('an explicit seek while reading the local record wins over the automatic resume threshold',async()=>{
+ const {store,audio,listeners}=setup();const pending=deferred();testApi.record=()=>pending.promise;store.getState().setResumeThreshold(null)
+ const playing=store.getState().play(track('1'));await new Promise(setImmediate);store.getState().seek(42)
+ pending.resolve(track('1'));await playing;assert.equal(audio[0].currentTime,42);listeners.pagehide()
 })

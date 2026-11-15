@@ -1,3 +1,4 @@
+import { syncErrorMessage } from '../../services/userErrors'
 import { ListeningBars } from './ListeningBars'
 import { hydrateSourceTitles } from '../../services/sourceTitles'
 import { listeningDuration } from '../../shared/listeningDuration'
@@ -79,7 +80,7 @@ export function ListeningStatistics({ onClose }: { onClose: () => void }) {
   const synchronize = async () => {
     setBusy(true); setError('')
     try { await invoke('listening_sync'); await client.invalidateQueries({ queryKey: ['listening-statistics'] }) }
-    catch (e) { setError(commandErrorMessage(e)) }
+    catch (e) { setError(syncErrorMessage(e)) }
     finally { setBusy(false) }
   }
   const configure = async () => {
@@ -89,7 +90,7 @@ export function ListeningStatistics({ onClose }: { onClose: () => void }) {
       await invoke('listening_sync_configure', { uid, enabled: !enabled })
       await client.invalidateQueries({ queryKey: ['listening-statistics'] })
       window.dispatchEvent(new Event('bilimusic-statistics-sync-requested'))
-    } catch (e) { setError(commandErrorMessage(e)) }
+    } catch (e) { setError(syncErrorMessage(e)) }
     finally { setBusy(false) }
   }
   const syncLabel = enabled ? data?.sync.error ? '账号统计 · 同步待重试' : data?.sync.pending ? '账号统计 · 有待上传记录' : data?.sync.lastSuccess ? '账号统计 · 已同步' : '账号统计 · 等待同步' : data?.sync.paused ? '账号统计同步已暂停' : uid ? '尚未连接统计同步服务' : '未登录 · 仅保存在本机'

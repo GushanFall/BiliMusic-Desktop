@@ -46,3 +46,16 @@ test('collections and multipart video identity remain exempt without exempting o
   assert.equal(policy.isCollectionPlayback({...one,source:{...one.source,page:2}}, []), true)
   assert.equal(policy.isCollectionPlayback(one, [one,{...one,id:'part2'}]), true)
 })
+
+test('automatic starting position uses prepared media total duration with the same cross-platform cases', async () => {
+  const rows = JSON.parse(await readFile('tests/fixtures/playback-start.json', 'utf8'))
+  for (const row of rows) {
+    if (row.explicit) continue
+    const value = policy.automaticResumePolicy(row.threshold, row.listed, !!row.collection)
+    assert.equal(policy.automaticResumePosition(row.position, row.duration, value), row.expected, row.name)
+  }
+  assert.throws(() => policy.automaticResumePosition(85, 0, policy.automaticResumePolicy(600, 0, false)), /无法读取视频总时长/)
+  assert.equal(policy.automaticResumePosition(85, 0, policy.automaticResumePolicy(0, 0, false)), 85)
+  assert.equal(policy.automaticResumePosition(85, 0, policy.automaticResumePolicy(null, 0, false)), 0)
+  assert.equal(policy.automaticResumePosition(85, 0, policy.automaticResumePolicy(600, 0, true)), 85)
+})

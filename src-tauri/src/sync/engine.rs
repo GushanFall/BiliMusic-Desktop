@@ -1127,6 +1127,30 @@ pub async fn sync(
 mod tests {
     use super::*;
     const LIST: &str = "00000000-0000-4000-8000-000000000001";
+    #[tokio::test]
+    async fn fresh_nutstore_account_previews_read_only_then_initializes_and_restores() {
+        let (mut cfg, secret, store, server) = super::super::test_dav::server().await;
+        cfg.initialized = false;
+        store.lock().unwrap().dirs.retain(|d| d == "/dav/");
+        probe(&cfg, &secret).await.expect("first connection must accept missing Nutstore ancestors");
+        {
+            let s = store.lock().unwrap();
+            assert_eq!(s.dirs.len(), 1);
+            assert!(s.files.is_empty());
+            assert!(s.requests.iter().all(|(m, _)| matches!(m.as_str(), "GET" | "PROPFIND")));
+        }
+        let a = device(&cfg);
+        change(&a, &format!("INSERT INTO playlists(id,name) VALUES('{LIST}','first playlist')"));
+        sync(&a, &cfg, &secret, None, true).await.unwrap();
+        assert!(store.lock().unwrap().files.is_empty());
+        assert!(store.lock().unwrap().dirs.iter().all(|d| d == "/dav/"));
+        assert!(run(&a, &cfg, &secret).await.conflicts.is_empty());
+        let b = device(&cfg);
+        assert!(run(&b, &cfg, &secret).await.conflicts.is_empty());
+        assert_eq!(value(&b, "name"), "first playlist");
+        for d in [a,b] { std::fs::remove_dir_all(d.1).unwrap(); }
+        server.abort();
+    }
     fn device(cfg: &Config) -> Database {
         let dir = std::env::temp_dir().join(format!("v2-executor-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

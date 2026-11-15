@@ -1,8 +1,8 @@
+import { syncErrorMessage } from '../../services/userErrors'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { Monitor, Smartphone, RefreshCw, LoaderCircle } from 'lucide-react'
-import { commandErrorMessage } from '../../services/desktopApi'
 
 type Device = { id: string; name: string; platform: string; current: boolean; retired: boolean; lastActivity?: number; status: 'ready' | 'waiting' | 'retired' | 'dormant' | 'unknown' | 'empty' }
 const labels = { ready: '已连接', waiting: '使用旧版同步', retired: '已停用', dormant: '7 天无同步活动', unknown: '活动时间待确认', empty: '暂无同步数据' }
@@ -20,7 +20,7 @@ export function SyncDevices() {
       client.setQueryData<Device[]>(['sync-devices'], previous => previous?.map(row => row.id === device.id ? { ...row, retired: true, status: 'retired' } : row))
       await query.refetch()
       setMessage('设备已停用，已同步的数据会保留。')
-    } catch (error) { setFailed(true); setMessage(commandErrorMessage(error)) }
+    } catch (error) { setFailed(true); setMessage(syncErrorMessage(error)) }
     finally { setPending('') }
   }
   return <details className="sync-device-section" onToggle={event => setOpen(event.currentTarget.open)}>
@@ -37,6 +37,6 @@ export function SyncDevices() {
       </li>
     })}</ul>}
     {query.data?.length === 0 && <p>暂未发现其他同步设备。</p>}
-    {(message || query.error) && <p className={(message ? failed : !!query.error) ? 'sync-message' : 'sync-device-note'} role="status">{message || commandErrorMessage(query.error)}</p>}
+    {(message || query.error) && <p className={(message ? failed : !!query.error) ? 'sync-message' : 'sync-device-note'} role="status">{message || syncErrorMessage(query.error)}</p>}
   </details>
 }

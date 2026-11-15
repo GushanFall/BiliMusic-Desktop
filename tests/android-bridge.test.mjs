@@ -40,10 +40,11 @@ test('real Tauri SDK listener registration, events, playback and removal satisfy
     window.__TAURI_INTERNALS__.runCallback(handler.id, { index: 0, message: { id: 'test', position: 5, status: 'playing', duration: 120 } })
     assert.equal(states[0].position, 5)
     const track = { id: 'test', title: 'song', artist: 'artist' }
+    await audio.syncAndroidQueue([track], 'all', false, 600, {kind:'video',collectionRef:'BV123'})
     await audio.prepareAndroidAudio(track)
     await audio.playAndroidAudio(track, 'http://127.0.0.1:1234/token/media', 5, .7)
     assert.equal((await audio.snapshotAndroidAudio()).status, 'playing')
     await subscription.unregister()
-    assert.deepEqual(calls, ['register_listener', 'control', 'play', 'snapshot', 'remove_listener'])
+    assert.deepEqual(calls, ['register_listener', 'queue', 'control', 'play', 'snapshot', 'remove_listener'])
   } finally { clearMocks() }
 })

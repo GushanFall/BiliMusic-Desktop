@@ -1,7 +1,7 @@
+import { syncErrorMessage } from '../../services/userErrors'
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Check } from 'lucide-react'
-import { commandErrorMessage } from '../../services/desktopApi'
 import type { SyncConflict } from '../../services/sync'
 
 type Cell = { type: 'missing' } | { type: 'value'; value: unknown }
@@ -24,7 +24,7 @@ export function SyncConflicts({ conflicts, busy, onMerge }: { conflicts: SyncCon
   useEffect(() => {
     let alive = true
     setMenu(null); setChoices({}); setError('')
-    void invoke<Menu>('sync_conflict_options').then(value => { if (alive) setMenu(value) }).catch(e => { if (alive) setError(commandErrorMessage(e)) })
+    void invoke<Menu>('sync_conflict_options').then(value => { if (alive) setMenu(value) }).catch(e => { if (alive) setError(syncErrorMessage(e)) })
     return () => { alive = false }
   }, [conflicts])
   const chooseAll = (side: number) => {

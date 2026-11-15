@@ -370,12 +370,12 @@ pub(super) fn check(status: reqwest::StatusCode) -> Result<(), String> {
     } else if status.as_u16() == 409 {
         Err("坚果云目录冲突（HTTP 409），请检查服务器地址是否指向已存在的文件夹".into())
     } else if status.as_u16() == 429 {
-        Err("坚果云请求过于频繁，请稍后重试".into())
+        Err("坚果云请求过于频繁（HTTP 429），请稍后重试".into())
     } else {
         Err(format!("坚果云返回 HTTP {}", status.as_u16()))
     }
 }
-fn missing_ancestor(data: &[u8]) -> bool {
+pub(super) fn missing_ancestor(data: &[u8]) -> bool {
     let mut reader = quick_xml::Reader::from_reader(data);
     let mut exception = false;
     loop {
@@ -390,6 +390,29 @@ fn missing_ancestor(data: &[u8]) -> bool {
             _ => {}
         }
     }
+}
+
+pub(super) fn check_at(status: reqwest::StatusCode, operation: &str) -> Result<(), String> {
+    check(status).map_err(|error| format!("{operation}失败：{error}"))
+}
+
+pub(super) fn request_error(error: &reqwest::Error, operation: &str) -> String {
+    // Classify the cause, without returning request URLs, headers or server content.
+    let diagnostic = format!("{error:?}").to_ascii_lowercase();
+    let reason = if error.is_timeout() {
+        "连接超时，请检查网络后重试"
+    } else if diagnostic.contains("certificate") || diagnostic.contains("invalidpeer") {
+        "安全连接证书校验失败，请检查系统时间、代理与网络证书"
+    } else if diagnostic.contains("dns") || diagnostic.contains("resolve") {
+        "服务器域名解析失败，请检查网络与 DNS 设置"
+    } else if error.is_connect() {
+        "无法连接坚果云服务器，请检查网络、防火墙与代理设置"
+    } else if error.is_body() {
+        "传输中断，请检查网络稳定性后重试"
+    } else {
+        "网络请求中断，请检查网络与代理后重试"
+    };
+    format!("{operation}失败：{reason}")
 }
 pub async fn read(c: &Config, s: &Secret) -> Result<Remote, String> {
     read_cached(c, s, None).await

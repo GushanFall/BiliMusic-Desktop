@@ -11,6 +11,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { Artwork } from './Artwork';
+import { AutomaticResumePolicy, playbackStartPosition } from './ResumePolicy';
 import { putWebDAV, WebDAVUpload } from './WebDAV';
 import native from 'libbilimusic_lib.so';
 
@@ -20,6 +21,7 @@ interface Args {
   position?: number; volume?: number; playing?: boolean; collectionRef?: string;
   rate?: number; seamless?: boolean; action?: string; value?: number | string; profilePath?: string;
   key?: string; remove?: boolean;
+  automaticResume?: AutomaticResumePolicy;
 }
 interface Snapshot {
   id: string; status: string; position: number; duration: number; rate: number;
@@ -68,6 +70,7 @@ export class PlayerPlugin {
   private previousPosition: number = -1;
   private previousAt: number = 0;
   private positionSavedAt: number = 0;
+  private initialPositionPending: boolean = false;
   private listeningSeconds: number = 0;
   private sessionId: string = util.generateRandomUUID(true);
   private sleepingAt: number = 0;
@@ -307,9 +310,10 @@ export class PlayerPlugin {
     this.desiredPlaying = args.playing !== false;
     this.pendingUpgradeUrl = /^http:\/\/127\.0\.0\.1:\d+\//.test(args.upgradeUrl ?? '') ? args.upgradeUrl! : '';
     this.upgradeAfterPosition = (args.position ?? 0) * 1000 + 750;
-    this.pendingSeek = -1;
     this.artwork.clear();this.cover=undefined;this.currentMetadata=null;this.metadataSignature='';this.metadataRetryAt=0;this.coverRevision+=1;
     this.accountListening(true);
+    this.pendingSeek = -1;
+    this.initialPositionPending = true;
     if (this.player) { await this.player.release(); this.player = null; }
     await this.ensureSession();
     if (revision !== this.mediaRevision) return;
@@ -321,7 +325,8 @@ export class PlayerPlugin {
     const player = await media.createAVPlayer();
     if (revision !== this.mediaRevision) { await player.release(); return; }
     this.player = player;
-    player.on('seekDone', () => { if (this.player !== player) return; this.pendingSeek = -1; this.mediaAdvancedAt = Date.now(); this.watchdogPosition = player.currentTime; this.emit(); });
+    let initialSeekDone: (() => void) | null = null;
+    player.on('seekDone', () => { if (this.player !== player) return; this.pendingSeek = -1; this.mediaAdvancedAt = Date.now(); this.watchdogPosition = player.currentTime; initialSeekDone?.(); this.emit(); });
     player.on('audioInterrupt', event => this.audioInterrupted(player, event));
     try { await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('音频准备超时，请重试')), 12000);
@@ -356,7 +361,18 @@ export class PlayerPlugin {
       player.url = args.url ?? '';
     }); } catch(error) { if(revision !== this.mediaRevision) return; throw new Error(String(error)); } finally { this.cancelPreparation=null; }
     player.setVolume(this.volume * (this.focusDucked ? 0.2 : 1)); this.applyRate(this.rate);
-    if ((args.position ?? 0) > 0) player.seek((args.position ?? 0) * 1000);
+    const position = playbackStartPosition(args.position ?? 0, player.duration / 1000, args.automaticResume);
+    this.upgradeAfterPosition = position * 1000 + 750;
+    if (position > 0) {
+      this.pendingSeek = position * 1000;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => { initialSeekDone = null; reject(new Error('音频定位超时，请重试')); }, 5000);
+        initialSeekDone = () => { clearTimeout(timeout); initialSeekDone = null; resolve(); };
+        player.seek(position * 1000);
+      });
+    }
+    if (revision !== this.mediaRevision || this.player !== player) return;
+    this.initialPositionPending = false;
     await this.setMetadata(revision);
     this.artworkReady = this.artwork.load(args.coverUrl, async pixels => {
       if(revision !== this.mediaRevision || this.player !== player) return;
@@ -479,7 +495,7 @@ export class PlayerPlugin {
     }
     this.previousScope = scope; this.previousId = this.id; this.previousPosition = position; this.previousAt = now;
     if (flush || this.listeningSeconds >= 15) this.flushListening(scope, this.id, now);
-    if ((flush || now - this.positionSavedAt >= 15000) && scope && this.id) {
+    if (!this.initialPositionPending && (flush || now - this.positionSavedAt >= 15000) && scope && this.id) {
       this.positionSavedAt = now;
       const state = this.snapshot();
       const saved = state.position < 1 || (state.duration > 0 && state.position >= state.duration - 1) ? 0 : state.position;

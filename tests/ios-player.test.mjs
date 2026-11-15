@@ -154,3 +154,12 @@ test('mobile startup hands the native player both sources without starting a sec
  await store.getState().play(track('1'))
  assert.equal(iosTest.plays.length,1);assert.equal(iosTest.plays[0][1],'http://127.0.0.1:1234/fast');assert.equal(iosTest.plays[0][8],'http://127.0.0.1:1234/high');assert.equal(store.getState().queue.length,1)
 })
+
+test('iOS defers automatic duration decisions to native readiness and leaves explicit starts untouched',async()=>{
+ const {usePlayerStore:s}=setup();s.getState().setResumeThreshold(600)
+ const unknown={...track('1'),durationSeconds:0}
+ await s.getState().play(unknown)
+ assert.deepEqual(iosTest.plays.at(-1)[9],{enabled:true,thresholdSeconds:600,collection:false,durationSeconds:0})
+ await s.getState().play({...track('2'),source:{...track('2').source,page:1}},42)
+ assert.equal(iosTest.plays.at(-1)[2],42);assert.equal(iosTest.plays.at(-1)[9],undefined)
+})

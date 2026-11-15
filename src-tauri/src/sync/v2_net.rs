@@ -9,6 +9,118 @@ pub struct Client<'a> {
     http: reqwest::Client,
     cache: Option<std::path::PathBuf>,
     directories: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    base_verified: tokio::sync::OnceCell<()>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn absent_ancestors_require_the_exact_server_error_and_an_accessible_base() {
+        for (status, body, base, success) in [
+            (
+                409,
+                "<d:error xmlns:d=\"DAV:\"><d:exception>AncestorsNotFound</d:exception></d:error>",
+                207,
+                true,
+            ),
+            (404, "not found", 207, true),
+            (
+                409,
+                "<error><exception>Conflict</exception></error>",
+                207,
+                false,
+            ),
+            (409, "<html>AncestorsNotFound</html>", 207, false),
+            (
+                409,
+                "<error><exception>AncestorsNotFound</exception></error>",
+                403,
+                false,
+            ),
+            (
+                409,
+                "<error><exception>AncestorsNotFound</exception></error>",
+                404,
+                false,
+            ),
+            (401, "unauthorized", 207, false),
+            (403, "forbidden", 207, false),
+            (429, "limited", 207, false),
+            (507, "storage full", 207, false),
+        ] {
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let captured = calls.clone();
+            let router = axum::Router::new().fallback(move |r: axum::extract::Request| {
+                let captured = captured.clone();
+                async move {
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push((r.method().to_string(), r.uri().path().to_owned()));
+                    (
+                        reqwest::StatusCode::from_u16(if r.uri().path() == "/dav/" {
+                            base
+                        } else {
+                            status
+                        })
+                        .unwrap(),
+                        body,
+                    )
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let cfg = Config {
+                uid: "42".into(),
+                url: format!("http://{}/dav/", listener.local_addr().unwrap()),
+                ..Config::default()
+            };
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let secret = Secret {
+                username: "test".into(),
+                password: "private-test-password".into(),
+            };
+            let net = Client::new(&cfg, &secret).unwrap();
+            let listing = net.list("sync-v2/new/control/").await;
+            let object = net.get("sync-v2/new/bootstrap/genesis.json").await;
+            assert_eq!(listing.is_ok(), success, "list {status}/{body}/{base}");
+            assert_eq!(object.is_ok(), success, "get {status}/{body}/{base}");
+            if let Err(error) = listing {
+                assert!(!error.contains("private-test-password"));
+                assert!(!error.contains("http://"));
+                assert!(error.contains("HTTP"));
+            }
+            let calls = calls.lock().unwrap();
+            assert!(
+                calls
+                    .iter()
+                    .all(|(method, _)| matches!(method.as_str(), "GET" | "PROPFIND"))
+            );
+            if success && status == 409 {
+                assert_eq!(calls.iter().filter(|(_, p)| p == "/dav/").count(), 1);
+            }
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn mkdir_rebuilds_cached_ancestors_removed_on_the_server() {
+        let (cfg, secret, store, server) = super::super::test_dav::server().await;
+        let net = Client::new(&cfg, &secret).unwrap();
+        net.parents().await.unwrap();
+        net.mkdir("sync-v2/test/objects/").await.unwrap();
+        store.lock().unwrap().dirs.retain(|d| d == "/dav/");
+        net.mkdir("sync-v2/test/control/").await.unwrap();
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .dirs
+                .contains("/dav/BiliMusic-sync-v1/42/sync-v2/test/control/")
+        );
+        server.abort();
+    }
 }
 #[derive(Debug, Clone)]
 pub struct Object {
@@ -43,6 +155,7 @@ impl<'a> Client<'a> {
             http: transport::client()?,
             cache: None,
             directories: std::sync::Mutex::new(Default::default()),
+            base_verified: tokio::sync::OnceCell::new(),
         })
     }
     pub fn cached(
@@ -85,9 +198,9 @@ impl<'a> Client<'a> {
                     .basic_auth(&self.secret.username, Some(&self.secret.password)),
             )
             .await
-            .map_err(|_| "无法创建同步父目录")?;
+            .map_err(|e| super::dav::request_error(&e, "创建同步父目录"))?;
             if response.status().as_u16() != 405 {
-                super::dav::check(response.status())?;
+                super::dav::check_at(response.status(), "创建同步父目录")?;
             }
             self.remember_directory(&path);
         }
@@ -111,6 +224,47 @@ impl<'a> Client<'a> {
                 self.url(path)?,
             )
             .basic_auth(&self.secret.username, Some(&self.secret.password)))
+    }
+    async fn verify_base(&self) -> Result<(), String> {
+        self.base_verified
+            .get_or_try_init(|| async {
+                let response = traffic::send(
+                    self.http
+                        .request(
+                            reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
+                            format!("{}/", self.cfg.url.trim_end_matches('/')),
+                        )
+                        .basic_auth(&self.secret.username, Some(&self.secret.password))
+                        .header("Depth", "0"),
+                )
+                .await
+                .map_err(|e| super::dav::request_error(&e, "检查坚果云根目录"))?;
+                super::dav::check_at(response.status(), "检查坚果云根目录")
+            })
+            .await
+            .map(|_| ())
+    }
+    async fn optional_response(
+        &self,
+        response: reqwest::Response,
+        operation: &str,
+    ) -> Result<Option<reqwest::Response>, String> {
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Ok(None);
+        }
+        if status.as_u16() == 409 {
+            let error = self.response(response).await?;
+            if super::dav::missing_ancestor(&error.body) {
+                // Only a verified, accessible configured base can represent an empty vault.
+                // Connection/preview stays read-only; never hide auth or arbitrary 409 errors.
+                self.verify_base().await?;
+                return Ok(None);
+            }
+            return Err(super::dav::check_at(status, operation).unwrap_err());
+        }
+        super::dav::check_at(status, operation)?;
+        Ok(Some(response))
     }
     async fn response(&self, r: reqwest::Response) -> Result<Object, String> {
         let server_time = r
@@ -167,11 +321,10 @@ impl<'a> Client<'a> {
         }
         let r = traffic::send(self.request("GET", path)?)
             .await
-            .map_err(|_| "无法读取同步对象")?;
-        if r.status().as_u16() == 404 {
+            .map_err(|e| super::dav::request_error(&e, "读取同步对象"))?;
+        let Some(r) = self.optional_response(r, "读取同步对象").await? else {
             return Ok(None);
-        }
-        super::dav::check(r.status())?;
+        };
         let object = self.response(r).await?;
         if let (Some(root), Some(hash)) = (&self.cache, digest) {
             if super::causal::hash(&object.body) != hash {
@@ -191,11 +344,10 @@ impl<'a> Client<'a> {
                 ),
         )
         .await
-        .map_err(|_| "无法读取同步目录")?;
-        if r.status().as_u16() == 404 {
+        .map_err(|e| super::dav::request_error(&e, "读取同步目录"))?;
+        let Some(r) = self.optional_response(r, "读取同步目录").await? else {
             return Ok((vec![], None));
-        }
-        super::dav::check(r.status())?;
+        };
         let obj = self.response(r).await?;
         let root = url::Url::parse(&self.url(path)?).map_err(|_| "同步目录无效")?;
         let mut reader = quick_xml::Reader::from_reader(obj.body.as_slice());
@@ -233,35 +385,40 @@ impl<'a> Client<'a> {
             return Err("同步目录路径无效".into());
         }
         let parts: Vec<_> = path.trim_end_matches('/').split('/').collect();
-        for n in 1..=parts.len() {
-            let directory = format!("{}/", parts[..n].join("/"));
-            if self.directory_known(&directory) {
-                continue;
-            }
-            let mut status = traffic::send(self.request("MKCOL", &directory)?.body(""))
-                .await
-                .map_err(|_| "无法创建同步目录")?
-                .status();
-            if status.as_u16() == 409 {
-                self.parents().await?;
-                status = traffic::send(self.request("MKCOL", &directory)?.body(""))
+        for attempt in 0..2 {
+            let mut restart = false;
+            for n in 1..=parts.len() {
+                let directory = format!("{}/", parts[..n].join("/"));
+                if self.directory_known(&directory) {
+                    continue;
+                }
+                let status = traffic::send(self.request("MKCOL", &directory)?.body(""))
                     .await
-                    .map_err(|_| "无法恢复同步目录")?
+                    .map_err(|e| super::dav::request_error(&e, "创建同步目录"))?
                     .status();
+                if status.as_u16() == 409 && attempt == 0 {
+                    self.directories.lock().unwrap().clear();
+                    self.parents().await?;
+                    restart = true;
+                    break;
+                }
+                if status.as_u16() != 405 {
+                    super::dav::check_at(status, "创建同步目录")?;
+                }
+                self.remember_directory(&directory);
             }
-            if status.as_u16() != 405 {
-                super::dav::check(status)?;
+            if !restart {
+                return Ok(());
             }
-            self.remember_directory(&directory);
         }
-        Ok(())
+        Err("恢复同步目录失败，请检查云端目录权限后重试".into())
     }
     pub async fn delete(&self, path: &str) -> Result<(), String> {
         let response = traffic::send(self.request("DELETE", path)?)
             .await
-            .map_err(|_| "同步提交清理中断")?;
+            .map_err(|e| super::dav::request_error(&e, "清理同步提交"))?;
         if response.status().as_u16() != 404 {
-            super::dav::check(response.status())?;
+            super::dav::check_at(response.status(), "清理同步提交")?;
         }
         Ok(())
     }
@@ -274,9 +431,9 @@ impl<'a> Client<'a> {
             for n in 1..parts.len() {
                 self.mkdir(&format!("{}/", parts[..n].join("/"))).await?;
             }
-            super::dav::check(self.put_once(path, body).await?)?;
+            super::dav::check_at(self.put_once(path, body).await?, "上传同步对象")?;
         } else {
-            super::dav::check(status)?;
+            super::dav::check_at(status, "上传同步对象")?;
         }
         Ok(())
     }
@@ -312,7 +469,7 @@ impl<'a> Client<'a> {
                     .body(body),
             )
             .await
-            .map_err(|_| "同步对象上传中断")?;
+            .map_err(|e| super::dav::request_error(&e, "上传同步对象"))?;
             Ok(r.status())
         }
     }

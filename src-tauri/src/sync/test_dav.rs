@@ -103,6 +103,16 @@ pub async fn server() -> (
                 if let Some(Failure::Before(status)) = failure {
                     return StatusCode::from_u16(status).unwrap().into_response();
                 }
+                // Nutstore distinguishes an absent resource from an absent ancestor.
+                // Exercise the real first-connect response instead of always returning 404.
+                let parent = format!("{}/", path.trim_end_matches('/').rsplit_once('/').unwrap().0);
+                if matches!(method.as_str(), "GET" | "PROPFIND")
+                    && !s.files.contains_key(&path) && !s.dirs.contains(&directory)
+                    && !s.dirs.contains(&parent)
+                {
+                    return (StatusCode::CONFLICT,
+                        "<d:error xmlns:d=\"DAV:\" xmlns:s=\"http://ns.jianguoyun.com\"><s:exception>AncestorsNotFound</s:exception></d:error>").into_response();
+                }
                 if method == "PUT" && matches!(failure, Some(Failure::DelayPut)) {
                     let now = s.now;
                     s.delayed.insert(path, (body.to_vec(), now));

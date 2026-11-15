@@ -16,11 +16,29 @@ precondition(resume.finish(allowed:true));precondition(!resume.finish(allowed:tr
 resume.begin(wasPlaying:false);precondition(!resume.finish(allowed:true))
 resume.begin(wasPlaying:true);resume.cancel();precondition(!resume.finish(allowed:true))
 resume.begin(wasPlaying:true);precondition(!resume.finish(allowed:false));precondition(!resume.finish(allowed:true))
+// A competing player never creates intent if this app was already paused.
+resume.begin(wasPlaying:false);precondition(!resume.finish(allowed:true))
+// Explicit pause/stop cancels a delayed recommendation, including duplicates.
+resume.begin(wasPlaying:true);resume.cancel();precondition(!resume.finish(allowed:true));precondition(!resume.finish(allowed:true))
+var recovery = PlaybackRecovery()
+let threshold = AutomaticResumePolicy(enabled:true,thresholdSeconds:600,collection:false,durationSeconds:0)
+recovery.prepare(policy:threshold)
+precondition(recovery.automaticResume?.thresholdSeconds == 600)
+precondition(recovery.position(current:0,saved:85,requested:85,initialPending:true)==85)
+recovery.chosePosition();precondition(recovery.automaticResume == nil)
+recovery.completedSeek(false)
+precondition(recovery.position(current:12,saved:85,requested:0,initialPending:false)==85)
+// A cancelled backward seek restores the intended smaller position too.
+precondition(recovery.position(current:120,saved:20,requested:0,initialPending:false)==20)
+recovery.completedSeek(true)
+precondition(recovery.position(current:23,saved:20,requested:0,initialPending:false)==23)
+recovery.prepare(policy:nil);precondition(!recovery.seekFailed)
+precondition(recovery.position(current:.nan,saved:32,requested:.nan,initialPending:false)==32)
 print("interruption cases passed")
 `)
   const dev='/Applications/Xcode.app/Contents/Developer'
   const sdk=execFileSync('/usr/bin/xcrun',['--sdk','macosx','--show-sdk-path'],{encoding:'utf8',env:{...process.env,DEVELOPER_DIR:dev}}).trim()
-  execFileSync(`${dev}/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc`,['-sdk',sdk,'-module-cache-path',join(folder,'module-cache'),'native/ios-player/ios/Sources/InterruptionResume.swift',join(folder,'main.swift'),'-o',join(folder,'cases')],{cwd:resolve('.'),timeout:60000})
+  execFileSync(`${dev}/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc`,['-sdk',sdk,'-module-cache-path',join(folder,'module-cache'),'native/ios-player/ios/Sources/InterruptionResume.swift','native/ios-player/ios/Sources/ResumePolicy.swift','native/ios-player/ios/Sources/PlaybackRecovery.swift',join(folder,'main.swift'),'-o',join(folder,'cases')],{cwd:resolve('.'),timeout:60000})
   assert.match(execFileSync(join(folder,'cases'),{encoding:'utf8'}),/cases passed/)
  }finally{await rm(folder,{recursive:true,force:true})}
 })

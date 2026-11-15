@@ -1,0 +1,45 @@
+//! A native channel, rather than a WebView event, resolves queue transitions.
+use crate::infrastructure::database::Database;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tauri::Manager;
+
+pub fn initialize(app: tauri::AppHandle) {
+    let profile_path = app.state::<Database>().1.join("active-profile");
+    let handle = app.clone();
+    let channel = tauri::ipc::Channel::new(move |body| {
+        #[derive(Deserialize)]
+        struct Request {
+            request: i64,
+            payload: Value,
+        }
+        if let Ok(request) = body.deserialize::<Request>() {
+            let app = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(20),
+                    crate::native_playback::resolve(&app, request.payload),
+                )
+                .await;
+                let result = match result {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => json!({"error":error}),
+                    Err(_) => json!({"error":"加载超时，请重新播放"}),
+                };
+                if let Err(error) =
+                    tauri_plugin_android_player::resolved(&app, request.request, &result).await
+                {
+                    eprintln!("Native playback reply failed: {error}");
+                }
+            });
+        }
+        Ok(())
+    });
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) =
+            tauri_plugin_android_player::observe_playback(&app, &profile_path, channel).await
+        {
+            eprintln!("Native playback observation failed: {error}");
+        }
+    });
+}
