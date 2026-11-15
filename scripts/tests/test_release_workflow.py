@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from publish_release import ApiError, Publisher, deploy_site, public_download, publication_lock, release_content_type
+from publish_release import ApiError, Publisher, deploy_site, public_download, publication_lock, release_content_type, fingerprint
 from release_packages import validate_bundle
 from prepare_release import prepare
 
@@ -253,6 +253,41 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     self.assertEqual(publisher.report['websitePublic']['status'], 'pending-icp-filing')
                     self.assertTrue(all('bilimusic.cn' not in call.args[0] for call in get.call_args_list))
                 self.assertEqual(publisher.mirror.call_count, 2)
+
+    def test_workstation_manifest_proof_is_bound_to_plan_urls_and_full_contents(self):
+        for pending in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                plan = {'version': '0.3.4', 'source': 'a' * 40, 'revision': 'stable', 'siteHost': 'bilimusic.cn', 'repos': {'github': 'owner/repo', 'gitee': 'owner/repo'}, 'manifest': {'version': '0.3.4', 'platforms': []}}
+                publisher = Publisher(plan, {}, directory)
+                publisher.site_filing_pending = pending
+                urls = ['https://gitee.com/owner/repo/raw/main/website/releases.json', 'https://raw.githubusercontent.com/owner/repo/main/website/releases.json']
+                if not pending:
+                    urls.insert(0, 'https://bilimusic.cn/api/v1/releases')
+                proof = {'planDigest': fingerprint(plan), 'results': [{'url': url, 'manifest': plan['manifest']} for url in urls]}
+                path = Path(directory) / 'public-manifest-verification.json'
+                for invalid in [dict(proof, planDigest='wrong'), dict(proof, results=proof['results'][:-1]), dict(proof, results=[proof['results'][0]] * len(urls)), dict(proof, results=[{'url': url, 'manifest': {'version': '0.3.4', 'platforms': ['wrong']}} for url in urls])]:
+                    path.write_text(json.dumps(invalid))
+                    with self.assertRaises(ValueError):
+                        publisher.verify_manifest_proof()
+                    self.assertNotIn('publicManifests', publisher.report)
+                path.write_text(json.dumps(proof))
+                publisher.verify_manifest_proof()
+                self.assertEqual(publisher.report['publicManifests']['verifiedBy'], 'publishing-workstation')
+                self.assertEqual(publisher.report['publicManifests']['urls'], urls)
+
+    def test_activation_can_defer_public_checks_until_workstation_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = {'version': '0.3.4', 'platforms': [{'channels': [{}, {}]} for _ in range(4)]}
+            plan = {'version': '0.3.4', 'source': 'a' * 40, 'revision': 'stable', 'siteHost': 'bilimusic.cn', 'siteRoot': '/opt/test', 'manifest': manifest, 'previous': {}, 'repos': {'github': 'owner/repo', 'gitee': 'owner/repo'}}
+            publisher = Publisher(plan, {}, directory)
+            publisher.report['downloads'] = [{} for _ in range(8)]
+            publisher.mirror = Mock()
+            with patch('publish_release.deploy_site', return_value={'version': '0.3.4'}), patch('publish_release.urllib.request.urlopen') as request:
+                publisher.activate(verify_public=False)
+            request.assert_not_called()
+            self.assertNotIn('publicManifests', publisher.report)
+            with self.assertRaisesRegex(ValueError, 'before all update sources'):
+                publisher.prune()
 
     def test_gitee_missing_release_can_return_json_null_with_http_200(self):
         with tempfile.TemporaryDirectory() as directory:

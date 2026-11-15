@@ -390,7 +390,7 @@ class Publisher:
         raw = subprocess.check_output(['curl', '--resolve', self.plan['siteHost'] + ':443:127.0.0.1', '-fsS', '--max-time', '10', 'https://' + self.plan['siteHost'] + path], stderr=subprocess.PIPE, timeout=15)
         return json.loads(raw)
 
-    def activate(self):
+    def activate(self, verify_public=True):
         require(len(self.report.get('downloads', [])) >= 8, 'Cannot activate before eight downloads are verified')
         require(len(self.report['downloads']) == sum(len(p['channels']) for p in self.plan['manifest']['platforms']), 'Cannot activate before every manifest download is verified')
         run = lambda args: subprocess.check_output(args, stderr=subprocess.PIPE, timeout=60)
@@ -405,6 +405,8 @@ class Publisher:
         if self.site_filing_pending:
             self.record('websitePublic', {'status': 'pending-icp-filing', 'url': endpoints[0], 'serverManifestVerified': True})
             endpoints = endpoints[1:]
+        if not verify_public:
+            return
         for attempt in range(40):
             states = []
             for url in endpoints:
@@ -420,6 +422,18 @@ class Publisher:
                 print(json.dumps({'stage': 'publicManifests', 'status': 'waiting for CDN caches'}), flush=True)
             time.sleep(10)
         raise RuntimeError('Public mirror caches not yet consistent; rerun to resume, old packages retained')
+
+    def verify_manifest_proof(self):
+        proof = json.loads((self.work / 'public-manifest-verification.json').read_text())
+        require(proof.get('planDigest') == fingerprint(self.plan), 'Manifest verification belongs to another plan')
+        urls = ['https://gitee.com/' + self.plan['repos']['gitee'] + '/raw/main/website/releases.json',
+                'https://raw.githubusercontent.com/' + self.plan['repos']['github'] + '/main/website/releases.json']
+        if not self.site_filing_pending:
+            urls.insert(0, 'https://' + self.plan['siteHost'] + '/api/v1/releases')
+        results = proof.get('results', [])
+        require(len(results) == len(urls) and {r.get('url') for r in results} == set(urls), 'Every public manifest must be verified')
+        require(all(r.get('manifest') == self.plan['manifest'] for r in results), 'Public manifest contents differ from the release')
+        self.record('publicManifests', {'urls': urls, 'sha256': fingerprint(self.plan['manifest']), 'verifiedBy': 'publishing-workstation'})
 
     def prune(self):
         require('publicManifests' in self.report, 'Cannot remove old assets before all update sources are verified')
@@ -450,9 +464,11 @@ def remote_main(work, phase, site_filing_pending=False):
         with publication_lock(plan['siteRoot'], fingerprint(plan), work) as owner:
             if phase == 'stage':
                 publisher.stage()
-            else:
+            elif phase == 'activate':
                 publisher.finish_release()
-                publisher.activate()
+                publisher.activate(verify_public=False)
+            else:
+                publisher.verify_manifest_proof()
                 publisher.prune()
                 save_json(owner, {'planDigest': fingerprint(plan), 'work': work, 'complete': True})
     except Exception as error:
@@ -540,6 +556,11 @@ def local_main(args):
         with ssh.open_sftp() as sftp:
             sftp.put(str(verification), work + '/download-verification.json')
         run_phase('activate')
+        public_proof = bundle / 'public-manifest-verification.json'
+        subprocess.run(['node', str(Path(__file__).with_name('verify_release_manifests.mjs')), str(bundle / 'release-plan.json'), str(public_proof), fingerprint(plan)] + (['filing-pending'] if args.site_filing_pending else []), check=True)
+        with ssh.open_sftp() as sftp:
+            sftp.put(str(public_proof), work + '/public-manifest-verification.json')
+        run_phase('finalize')
         report = json.loads((bundle / 'release-report.json').read_text())
         require(report.get('complete', {}).get('verifiedDownloadCount') == len(expected), 'Incomplete release report')
         print(json.dumps({'report': str(bundle / 'release-report.json'), 'status': 'complete'}), flush=True)
@@ -557,7 +578,7 @@ if __name__ == '__main__':
     parser.add_argument('--site-filing-pending', action='store_true', help='Publish verified site configuration while explicitly recording public access pending ICP filing')
     parser.add_argument('--previous-bundle', help='Optional original release directory used to reuse verified metadata backups')
     parser.add_argument('--remote-work', help=argparse.SUPPRESS)
-    parser.add_argument('--remote-phase', choices=['stage', 'activate'], help=argparse.SUPPRESS)
+    parser.add_argument('--remote-phase', choices=['stage', 'activate', 'finalize'], help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         if args.remote_work:
