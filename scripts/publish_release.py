@@ -557,7 +557,9 @@ def local_main(args):
             sftp.put(str(verification), work + '/download-verification.json')
         run_phase('activate')
         public_proof = bundle / 'public-manifest-verification.json'
-        subprocess.run(['node', str(Path(__file__).with_name('verify_release_manifests.mjs')), str(bundle / 'release-plan.json'), str(public_proof), fingerprint(plan)] + (['filing-pending'] if args.site_filing_pending else []), check=True)
+        activated = json.loads((bundle / 'release-report.json').read_text())
+        filing_pending = args.site_filing_pending or activated.get('websitePublic', {}).get('status') == 'pending-icp-filing'
+        subprocess.run(['node', str(Path(__file__).with_name('verify_release_manifests.mjs')), str(bundle / 'release-plan.json'), str(public_proof), fingerprint(plan)] + (['filing-pending'] if filing_pending else []), check=True)
         with ssh.open_sftp() as sftp:
             sftp.put(str(public_proof), work + '/public-manifest-verification.json')
         run_phase('finalize')
