@@ -1,9 +1,11 @@
 import base64
 import hashlib
+import io
 import json
 import sys
 import tempfile
 import unittest
+import zipfile
 import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
@@ -15,6 +17,44 @@ from prepare_release import prepare
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_ci_artifact_redirect_does_not_forward_api_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            publisher = Publisher({'version': '0.3.3', 'source': 'a' * 40, 'revision': 'stable', 'repos': {'github': 'owner/repo'}}, {'github': 'PRIVATE-TOKEN'}, directory)
+            publisher.opener = Mock()
+            publisher.opener.open.side_effect = urllib.error.HTTPError('https://api.github.com/artifact', 302, 'redirect', {'Location': 'https://cdn.example.test/archive'}, None)
+            response = MagicMock()
+            response.read.return_value = b'ZIP-ARCHIVE'
+            with patch('publish_release.urllib.request.urlopen', return_value=response) as download:
+                self.assertEqual(publisher.ci_archive(2), b'ZIP-ARCHIVE')
+                self.assertEqual(download.call_args.args, ('https://cdn.example.test/archive',))
+                self.assertNotIn('PRIVATE-TOKEN', str(download.call_args))
+
+    def test_dispatched_build_checks_actual_artifact_source_and_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, package = 'a' * 40, b'VERIFIED-INSTALLER'
+            plan = {'version': '0.3.3', 'source': source, 'revision': 'stable',
+                    'ciRuns': {'Windows': {'run': 1, 'artifact': 'windows', 'notice': 'notice.json', 'package': 'setup.exe'}},
+                    'assets': [{'binary': True, 'size': len(package), 'sha256': hashlib.sha256(package).hexdigest()}]}
+            publisher = Publisher(plan, {}, directory)
+            publisher.api = Mock(side_effect=lambda channel, path: {'conclusion': 'success', 'head_sha': 'b' * 40, 'event': 'workflow_dispatch'} if path == '/actions/runs/1' else {'artifacts': [{'id': 2, 'name': 'windows', 'expired': False}]})
+            def artifact(commit=source, binary=package):
+                output = io.BytesIO()
+                with zipfile.ZipFile(output, 'w') as archive:
+                    archive.writestr('notice.json', json.dumps({'sourceCommit': commit, 'version': '0.3.3'}))
+                    archive.writestr('setup.exe', binary)
+                return output.getvalue()
+            publisher.ci_archive = Mock(return_value=artifact())
+            publisher.check_ci()
+            publisher.ci_archive.return_value = artifact(commit='c' * 40)
+            with self.assertRaisesRegex(ValueError, 'source notice mismatch'):
+                publisher.check_ci()
+            publisher.ci_archive.return_value = artifact(binary=b'WRONG-INSTALLER')
+            with self.assertRaisesRegex(ValueError, 'package mismatch'):
+                publisher.check_ci()
+            publisher.api = Mock(return_value={'conclusion': 'failure', 'head_sha': source})
+            with self.assertRaisesRegex(ValueError, 'Build failed'):
+                publisher.check_ci()
+
     def test_apk_upload_has_android_content_type_instead_of_zip_or_unspecified_binary(self):
         self.assertEqual(release_content_type('BiliMusic.APK'), 'application/vnd.android.package-archive')
         self.assertEqual(release_content_type('BiliMusic.exe'), 'application/octet-stream')

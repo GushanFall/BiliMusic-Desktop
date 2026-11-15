@@ -8,6 +8,7 @@ import base64
 import contextlib
 import getpass
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -19,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from pathlib import Path
 
 
@@ -296,10 +298,40 @@ class Publisher:
                 time.sleep(2)
 
     def check_ci(self):
-        for platform, run in self.plan['ciRuns'].items():
+        for platform, evidence in self.plan['ciRuns'].items():
+            run = evidence['run'] if isinstance(evidence, dict) else evidence
             data = self.api('github', f'/actions/runs/{run}')
-            require(data['conclusion'] == 'success' and data['head_sha'] == self.plan.get('platformSources', {}).get(platform, self.plan['source']), 'Build provenance mismatch: ' + platform)
+            source = self.plan.get('platformSources', {}).get(platform, self.plan['source'])
+            require(data['conclusion'] == 'success', 'Build failed: ' + platform)
+            if data['head_sha'] != source:
+                # workflow_dispatch may check out a pinned source_ref rather
+                # than the workflow's own head. Verify the actual CI output.
+                require(isinstance(evidence, dict) and data.get('event') == 'workflow_dispatch', 'Build provenance mismatch: ' + platform)
+                artifacts = self.api('github', f'/actions/runs/{run}/artifacts?per_page=100')['artifacts']
+                matches = [a for a in artifacts if a['name'] == evidence['artifact'] and not a['expired']]
+                require(len(matches) == 1, 'CI artifact missing or ambiguous: ' + platform)
+                raw = self.ci_archive(matches[0]['id'])
+                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                    require(archive.testzip() is None, 'Corrupt CI artifact')
+                    notice = json.loads(archive.read(evidence['notice']))
+                    require(notice['sourceCommit'] == source and notice['version'] == self.plan['version'], 'CI source notice mismatch: ' + platform)
+                    package = archive.read(evidence['package'])
+                    package_hash = hashlib.sha256(package).hexdigest()
+                    require(any(a['binary'] and a['size'] == len(package) and a['sha256'] == package_hash for a in self.plan['assets']), 'CI package mismatch: ' + platform)
         self.record('ci', self.plan['ciRuns'])
+
+    def ci_archive(self, artifact_id):
+        request = urllib.request.Request(self.base('github') + f'/actions/artifacts/{artifact_id}/zip', headers={'Authorization': 'Bearer ' + self.secrets['github'], 'User-Agent': 'BiliMusic-release-workflow'})
+        try:
+            response = self.opener.open(request, timeout=60)
+        except urllib.error.HTTPError as error:
+            require(error.code == 302 and error.headers.get('Location', '').startswith('https://'), 'Unexpected CI artifact response')
+            # The signed CDN URL must never receive the API bearer token.
+            response = urllib.request.urlopen(error.headers['Location'], timeout=120)
+        with response:
+            raw = response.read(64 * 1024 * 1024 + 1)
+        require(len(raw) <= 64 * 1024 * 1024, 'CI artifact exceeds size limit')
+        return raw
 
     def stage(self):
         self.check_ci()
