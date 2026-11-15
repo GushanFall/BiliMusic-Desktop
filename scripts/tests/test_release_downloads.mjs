@@ -63,3 +63,32 @@ test('metadata backups reuse locally verified originals without network requests
   assert.equal(proof.results[0].sha256, sha256)
   assert.equal(await readFile(join(root, 'original-assets/github/build-info.json'), 'utf8'), 'package')
 })
+
+test('public GitHub ranges cover every byte once and retain the full-file hash', async () => {
+  const { verifyPublicAsset } = await import('../download_release_asset.mjs')
+  const bytes=Buffer.alloc(700000);for(let i=0;i<bytes.length;i++)bytes[i]=i%251
+  const platform={id:'android-large',file:'large.apk',size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')}
+  const ranges=[]
+  const request=async (url,options)=>{
+    const [,start,end]=/bytes=(\d+)-(\d+)/.exec(options.headers.Range).map(Number)
+    ranges.push([start,end])
+    const response=new Response(bytes.subarray(start,end+1),{status:206,headers:{'content-range':`bytes ${start}-${end}/${bytes.length}`,etag:'"fixed"','content-type':'application/vnd.android.package-archive'}})
+    Object.defineProperty(response,'url',{value:url});return response
+  }
+  const result=await verifyPublicAsset(platform,{id:'github',url:'https://example.test/public.apk'},request)
+  assert.equal(result.sha256,platform.sha256);assert.equal(result.size,bytes.length)
+  assert.deepEqual(ranges.sort((a,b)=>a[0]-b[0]),[[0,262143],[262144,524287],[524288,699999]])
+})
+
+test('range downloads reject ignored ranges, changed entities and truncated bodies', async () => {
+  const { verifyPublicAsset } = await import('../download_release_asset.mjs')
+  const platform={id:'mac',file:'app.dmg',size:600000,sha256:'a'.repeat(64)},channel={id:'github',url:'https://example.test/app.dmg'}
+  for(const fault of ['range','etag','body']){
+    const request=async(url,options)=>{
+      const [,start,end]=/bytes=(\d+)-(\d+)/.exec(options.headers.Range).map(Number)
+      const response=new Response(Buffer.alloc(end-start+(fault==='body'?0:1)),{status:fault==='range'?200:206,headers:{'content-range':`bytes ${start}-${end}/${platform.size}`,etag:fault==='etag'?String(start):'fixed'}})
+      Object.defineProperty(response,'url',{value:url});return response
+    }
+    await assert.rejects(verifyPublicAsset(platform,channel,request),fault==='range'?/range mismatch/:fault==='etag'?/changed during/:/Incomplete/)
+  }
+})

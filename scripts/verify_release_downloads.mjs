@@ -1,8 +1,7 @@
 // Public verification runs on the publishing workstation, independently of
 // server-to-GitHub connectivity. No API credentials are accepted or needed.
 import { readFile, writeFile, rename } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
-import { inspectDownloadHeaders } from './release_content_types.mjs'
+import { verifyPublicAsset } from './download_release_asset.mjs'
 
 const [planPath, reportPath, planDigest] = process.argv.slice(2)
 if (!planPath || !reportPath || !/^[a-f0-9]{64}$/.test(planDigest || '')) throw new Error('Usage: node verify_release_downloads.mjs plan.json report.json plan-sha256')
@@ -16,18 +15,7 @@ async function worker() {
     const { platform, channel } = work.shift()
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const response = await fetch(channel.url, { signal: AbortSignal.timeout(180_000), headers: { 'user-agent': 'BiliMusic-release-verification' } })
-        if (!response.ok || !response.url.startsWith('https://')) throw new Error('Download unavailable')
-        const downloadHeaders=inspectDownloadHeaders(platform.file,response.headers)
-        const hash = createHash('sha256'); let size = 0
-        for await (const chunk of response.body) {
-          size += chunk.length
-          if (size > platform.size) throw new Error('Download size exceeded manifest')
-          hash.update(chunk)
-        }
-        const sha256 = hash.digest('hex')
-        if (size !== platform.size || sha256 !== platform.sha256) throw new Error('Downloaded size or SHA-256 mismatch')
-        results.push({ url: channel.url, size, sha256, platform: platform.id, channel: channel.id, ...downloadHeaders })
+        results.push(await verifyPublicAsset(platform, channel))
         console.log(JSON.stringify({ downloadVerified: platform.file, channel: channel.id }))
         break
       } catch (error) {
