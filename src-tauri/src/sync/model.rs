@@ -185,8 +185,15 @@ impl Snapshot {
                     "overrideAlbum",
                     "overrideCover",
                 ],
-                "view" => &["id","displayRank","sortRule"],
-                "playlist" => &["id", "name", "description", "coverUrl", "displayRank", "sortRule"],
+                "view" => &["id", "displayRank", "sortRule"],
+                "playlist" => &[
+                    "id",
+                    "name",
+                    "description",
+                    "coverUrl",
+                    "displayRank",
+                    "sortRule",
+                ],
                 "collectionFolder" => &["id", "name", "scope", "displayRank", "sortRule"],
                 "linkedFolder" => &["folderId", "name", "displayRank", "sortRule"],
                 "collection" => &["bvid", "folderId", "displayRank", "sortRule"],
@@ -212,11 +219,19 @@ impl Snapshot {
             {
                 return Err("同步记录格式或字段长度无效".into());
             }
-            if r.fields.get("displayRank").is_some_and(|v|!v.as_str().is_some_and(crate::interface::list_preferences::valid_rank)) || r.fields.get("sortRule").is_some_and(|v|!v.as_str().is_some_and(crate::interface::list_preferences::valid_rule)) {return Err("同步排序设置无效".into())}
+            if r.fields.get("displayRank").is_some_and(|v| {
+                !v.as_str()
+                    .is_some_and(crate::interface::list_preferences::valid_rank)
+            }) || r.fields.get("sortRule").is_some_and(|v| {
+                !v.as_str()
+                    .is_some_and(crate::interface::list_preferences::valid_rule)
+            }) {
+                return Err("同步排序设置无效".into());
+            }
             let id = text(r, "id");
             let track = text(r, "trackId");
             let valid = match r.kind.as_str() {
-                "view" => key==&format!("view:{id}") && matches!(id,"favorites"|"saved"),
+                "view" => key == &format!("view:{id}") && matches!(id, "favorites" | "saved"),
                 "track" => {
                     key == &format!("track:{id}")
                         && id == format!("bilibili:{}:{}", text(r, "bvid"), number(r, "cid"))
@@ -318,7 +333,7 @@ impl Snapshot {
             ("linkedFolder", 500),
             ("collection", 2000),
             ("collectionProgress", 2000),
-            ("view",2),
+            ("view", 2),
             ("playlist", 500),
             ("track", 5000),
             ("item", 10000),

@@ -72,6 +72,7 @@ function QueueTrack({ track, active, label, groupIndex, groupCount, child = fals
   track: Track; active: boolean; label: string; groupIndex: number; groupCount: number; child?: boolean; observe?: boolean; group?: boolean
 }) {
   const menu = useRowContextMenu()
+  const title = track.displayTitle || track.title
   const { ref, pages } = useVisibleVideoPages(track.source.bvid, observe && Boolean(track.resolveParts) && track.partCount === undefined)
   useEffect(() => {
     if (observe && track.resolveParts && track.partCount === undefined && pages?.length) void prepareSeasonQueueEntry(track).catch(() => undefined)
@@ -79,11 +80,11 @@ function QueueTrack({ track, active, label, groupIndex, groupCount, child = fals
   const play = () => void usePlayerStore.getState().play(track)
   return <div ref={ref} className={`queue-entry queue-track-row playing-row${child ? ' queue-part-row' : ''}`} data-current-row={active ? track.id : undefined}
     onContextMenu={menu.onContextMenu}>
-    <button type="button" className="queue-row-main" aria-current={active ? 'true' : undefined} aria-label={`播放 ${track.title}`} onClick={play}>
+    <button type="button" className="queue-row-main" aria-current={active ? 'true' : undefined} aria-label={`播放 ${title}`} onClick={play}>
       <span className="queue-row-number">{active ? <PlayingMark/> : label}</span>
-      <strong>{track.title}</strong><small className="queue-row-duration">{formatDuration(track.durationSeconds)}</small>
+      <strong>{title}</strong><small className="queue-row-duration">{formatDuration(track.durationSeconds)}</small>
     </button>
-    <QueueActions contextPosition={menu.position} title={track.title} ids={[track.id]} tracks={[track]} onPlay={play} group={group} flat={!group && !child}
+    <QueueActions contextPosition={menu.position} title={title} ids={[track.id]} tracks={[track]} onPlay={play} group={group} flat={!group && !child}
       canUp={groupIndex > 0} canDown={groupIndex < groupCount - 1}/>
   </div>
 }

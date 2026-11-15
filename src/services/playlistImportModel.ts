@@ -2,7 +2,7 @@ import { rankDurationFirstSongCandidates, type ExternalSong, type SongCandidate 
 import type { Track } from '../domain/track'
 
 export type ImportSong = ExternalSong & { sourceId: string; album?: string; coverUrl?: string }
-export type ImportPlaylist = { name: string; source: 'netease' | 'qq' | 'text'; songs: ImportSong[]; reportedCount: number; unavailableCount: number }
+export type ImportPlaylist = { name: string; source: 'netease' | 'qq' | 'kugou' | 'kuwo' | 'migu' | 'text'; songs: ImportSong[]; reportedCount: number; unavailableCount: number }
 export type ImportChoice = { track: Track; evidence: SongCandidate }
 
 export function parseSongList(text: string): ImportPlaylist {
@@ -61,4 +61,14 @@ export function chooseImportMatch(song: ImportSong, choices: ImportChoice[]): Im
     const choice = choices.find(choice=>choice.track.source.bvid === c.bvid && choice.track.source.cid === c.cid)
     if (choice) return choice
   }
+}
+
+export function playlistLinkPlatform(input:string):string|undefined {
+  const link=input.match(/https?:\/\/[^\s]+/)?.[0];if(!link)return
+  try{const host=new URL(link).hostname;const groups:[string[],string][]=[
+    [['music.163.com','163cn.tv'],'网易云音乐'],[['y.qq.com'],'QQ 音乐'],
+    [['kugou.com','m.kugou.com','www.kugou.com','m3ws.kugou.com','t.kugou.com'],'酷狗音乐'],
+    [['kuwo.cn','www.kuwo.cn','m.kuwo.cn','h5app.kuwo.cn'],'酷我音乐'],
+    [['music.migu.cn','m.music.migu.cn','h5.nf.migu.cn','c.migu.cn'],'咪咕音乐'],
+  ];return groups.find(([hosts])=>hosts.includes(host))?.[1]}catch{return}
 }

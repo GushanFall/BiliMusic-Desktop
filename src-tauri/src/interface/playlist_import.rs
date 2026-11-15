@@ -10,33 +10,48 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tauri::State;
 
-const MAX_SONGS: usize = 5000;
+pub(super) const MAX_SONGS: usize = 5000;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalSong {
-    source_id: String,
-    title: String,
-    artists: Vec<String>,
-    aliases: Vec<String>,
-    duration_seconds: f64,
-    album: Option<String>,
-    cover_url: Option<String>,
+    pub(super) source_id: String,
+    pub(super) title: String,
+    pub(super) artists: Vec<String>,
+    pub(super) aliases: Vec<String>,
+    pub(super) duration_seconds: f64,
+    pub(super) album: Option<String>,
+    pub(super) cover_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalPlaylist {
-    name: String,
-    source: String,
-    songs: Vec<ExternalSong>,
-    reported_count: usize,
-    unavailable_count: usize,
+    pub(super) name: String,
+    pub(super) source: String,
+    pub(super) songs: Vec<ExternalSong>,
+    pub(super) reported_count: usize,
+    pub(super) unavailable_count: usize,
 }
 
 fn allowed_host(host: &str) -> bool {
-    host == "163cn.tv"
+    matches!(
+        host,
+        "kugou.com"
+            | "m.kugou.com"
+            | "www.kugou.com"
+            | "m3ws.kugou.com"
+            | "t.kugou.com"
+            | "kuwo.cn"
+            | "www.kuwo.cn"
+            | "m.kuwo.cn"
+            | "h5app.kuwo.cn"
+            | "music.migu.cn"
+            | "m.music.migu.cn"
+            | "h5.nf.migu.cn"
+            | "c.migu.cn"
+    ) || host == "163cn.tv"
         || host == "music.163.com"
         || host.ends_with(".music.163.com")
         || host == "y.qq.com"
@@ -53,7 +68,9 @@ fn parse_input(input: &str) -> Result<Url, CommandError> {
     let start = normalized
         .find("https://")
         .or_else(|| normalized.find("http://"))
-        .ok_or_else(|| CommandError::validation("请粘贴网易云或 QQ 音乐的歌单分享链接"))?;
+        .ok_or_else(|| {
+            CommandError::validation("请粘贴网易云、QQ、酷狗、酷我或咪咕的歌单分享链接")
+        })?;
     let text = normalized[start..]
         .split_whitespace()
         .next()
@@ -71,13 +88,106 @@ fn check_url(url: &Url) -> Result<(), CommandError> {
         || url.password().is_some()
         || url.port().is_some()
     {
-        return Err(CommandError::validation("仅支持网易云和 QQ 音乐的歌单链接"));
+        return Err(CommandError::validation("请使用支持的音乐平台歌单分享链接"));
     }
     Ok(())
 }
 
 fn playlist_id(url: &Url) -> Option<(&'static str, String)> {
     let host = url.host_str()?;
+    if let Some(fragment) = url
+        .fragment()
+        .filter(|f| f.contains("playlist") && f.contains('?'))
+    {
+        if let Ok(nested) = Url::parse(&format!(
+            "https://{host}/{}",
+            fragment.trim_start_matches('/')
+        )) {
+            if let Some(result) = playlist_id(&nested) {
+                return Some(result);
+            }
+        }
+    }
+    if matches!(
+        host,
+        "kugou.com" | "m.kugou.com" | "www.kugou.com" | "m3ws.kugou.com"
+    ) {
+        if let Some(id) = url.path_segments().into_iter().flatten().find(|s| {
+            s.starts_with("gcid_")
+                && s.len() < 100
+                && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        }) {
+            return Some(("kugou", id.into()));
+        }
+    }
+    if matches!(
+        host,
+        "kugou.com" | "m.kugou.com" | "www.kugou.com" | "m3ws.kugou.com"
+    ) {
+        if let Some((_, id)) = url.query_pairs().find(|(k, v)| {
+            k == "global_collection_id"
+                && v.len() <= 100
+                && v.starts_with("collection_")
+                && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        }) {
+            return Some(("kugou", id.into_owned()));
+        }
+        if url.path().contains("/special/single/") {
+            if let Some(id) = url
+                .path()
+                .split('/')
+                .next_back()
+                .and_then(|s| s.strip_suffix(".html"))
+                .filter(|s| s.len() <= 20 && !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Some(("kugou", format!("special:{id}")));
+            }
+        }
+    }
+    if matches!(
+        host,
+        "kuwo.cn"
+            | "www.kuwo.cn"
+            | "m.kuwo.cn"
+            | "h5app.kuwo.cn"
+            | "music.migu.cn"
+            | "m.music.migu.cn"
+            | "h5.nf.migu.cn"
+    ) {
+        let source = if host.ends_with("kuwo.cn") {
+            "kuwo"
+        } else {
+            "migu"
+        };
+        if source == "migu" && !url.path().contains("playlist") {
+            return None;
+        }
+        let id = url
+            .path_segments()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|w| matches!(w[0], "playlist" | "playlist_detail"))
+            .map(|w| w[1].to_owned())
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .or_else(|| {
+                url.query_pairs()
+                    .find(|(k, _)| {
+                        if source == "kuwo" {
+                            matches!(k.as_ref(), "pid" | "playlistId")
+                        } else {
+                            matches!(k.as_ref(), "id" | "playlistId")
+                        }
+                    })
+                    .map(|(_, v)| v.into_owned())
+            });
+        if let Some(id) =
+            id.filter(|s| !s.is_empty() && s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Some((source, id));
+        }
+    }
     let source = if host == "music.163.com" || host.ends_with(".music.163.com") {
         "netease"
     } else if host == "y.qq.com" || host.ends_with(".y.qq.com") {
@@ -134,7 +244,7 @@ fn playlist_id(url: &Url) -> Option<(&'static str, String)> {
     query.or(path).map(|id| (source, id))
 }
 
-async fn limited_body(mut response: reqwest::Response) -> Result<Vec<u8>, CommandError> {
+pub(super) async fn limited_body(mut response: reqwest::Response) -> Result<Vec<u8>, CommandError> {
     if response.content_length().unwrap_or(0) > MAX_BODY as u64 {
         return Err(CommandError::validation("歌单内容过大，请分批导入"));
     }
@@ -152,7 +262,11 @@ async fn limited_body(mut response: reqwest::Response) -> Result<Vec<u8>, Comman
     Ok(body)
 }
 
-async fn json(client: &Client, url: Url, referer: &'static str) -> Result<Value, CommandError> {
+pub(super) async fn json(
+    client: &Client,
+    url: Url,
+    referer: &'static str,
+) -> Result<Value, CommandError> {
     let response = client
         .get(url)
         .header("Referer", referer)
@@ -291,7 +405,9 @@ async fn read_playlist(input: &str) -> Result<ExternalPlaylist, CommandError> {
     // Separate cookie-free client: never forward Bilibili login credentials to other services.
     let client = Client::builder()
         .timeout(Duration::from_secs(18))
-        .user_agent("Mozilla/5.0")
+        .user_agent(
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36",
+        )
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(CommandError::provider)?;
@@ -321,6 +437,9 @@ async fn read_playlist(input: &str) -> Result<ExternalPlaylist, CommandError> {
     let (source, id) = identity.ok_or_else(|| {
         CommandError::validation("未找到歌单，请复制歌单分享链接，而不是歌曲或个人主页链接")
     })?;
+    if matches!(source, "kugou" | "kuwo" | "migu") {
+        return super::playlist_sources::read(&client, source, &id).await;
+    }
     if source == "netease" {
         let data = json(
             &client,
@@ -438,8 +557,18 @@ async fn read_playlist(input: &str) -> Result<ExternalPlaylist, CommandError> {
             }
         }
         begin += items.len();
-        if songs.len() == before || items.len() < 100 || (reported > 0 && begin >= reported) {
+        if songs.len() == before {
+            return Err(CommandError::provider(
+                "QQ 歌单分页未推进，请稍后重试或使用文本导入",
+            ));
+        }
+        if reported > 0 && songs.len() >= reported || reported == 0 && items.len() < 100 {
             break;
+        }
+        if begin > MAX_SONGS * 2 {
+            return Err(CommandError::provider(
+                "QQ 歌单分页过多，请稍后重试或使用文本导入",
+            ));
         }
     }
     if songs.is_empty() {
@@ -467,6 +596,8 @@ pub struct ImportEntry {
     track: TrackInput,
     metadata: Option<MetadataPatch>,
     replace_track_id: Option<String>,
+    #[serde(default)]
+    original_position: Option<usize>,
 }
 
 pub(crate) fn scope(connection: &Connection) -> String {
@@ -505,6 +636,9 @@ fn commit(
         return Err(CommandError::validation("导入内容无效"));
     }
     for entry in entries {
+        if entry.original_position.is_some_and(|p| p >= MAX_SONGS) {
+            return Err(CommandError::validation("导入序号无效"));
+        }
         let t = &entry.track;
         if t.cid <= 0
             || t.page < 1
@@ -546,6 +680,23 @@ fn commit(
             |r| r.get(0),
         )
         .map_err(CommandError::database)?;
+    let mut archived: Vec<(usize, String)> = connection_archive_rows(&tx, playlist_id);
+    archived.sort_unstable_by_key(|(order, _)| *order);
+    let mut archive: Option<Value> = tx
+        .query_row(
+            "SELECT document FROM playlist_import_archives WHERE playlist_id=?1",
+            [playlist_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let mut positions: HashMap<String, i64> = tx
+        .prepare("SELECT track_id,position FROM playlist_items WHERE playlist_id=?1")
+        .map_err(CommandError::database)?
+        .query_map([playlist_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(CommandError::database)?
+        .collect::<Result<_, _>>()
+        .map_err(CommandError::database)?;
     for entry in entries {
         let track = &entry.track;
         let replacement_position: Option<i64> = entry
@@ -581,7 +732,35 @@ fn commit(
         if let Some(m) = &entry.metadata {
             tx.execute("INSERT INTO metadata_overrides(track_id,title,artist,album,cover_url) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(track_id) DO NOTHING",params![track.id,m.title,m.artist,m.album,m.cover_url]).map_err(CommandError::database)?;
         }
-        let inserted = tx.execute("INSERT OR IGNORE INTO playlist_items(playlist_id,track_id,position) VALUES(?1,?2,?3)",params![playlist_id,track.id,replacement_position.unwrap_or(position)]).map_err(CommandError::database)?;
+        if replacement_position.is_some() && positions.contains_key(&track.id) {
+            return Err(CommandError::validation("该版本已在歌单中，请选择其他视频"));
+        }
+        let mut destination = replacement_position.unwrap_or(position);
+        if replacement_position.is_none() && !positions.contains_key(&track.id) {
+            if let Some(order) = entry.original_position {
+                destination = archived
+                    .iter()
+                    .find(|(i, id)| *i > order && positions.contains_key(id))
+                    .and_then(|(_, id)| positions.get(id))
+                    .copied()
+                    .or_else(|| {
+                        archived
+                            .iter()
+                            .rev()
+                            .find(|(i, id)| *i < order && positions.contains_key(id))
+                            .and_then(|(_, id)| positions.get(id))
+                            .map(|p| p + 1)
+                    })
+                    .unwrap_or(0);
+                tx.execute("UPDATE playlist_items SET position=position+1 WHERE playlist_id=?1 AND position>=?2",params![playlist_id,destination]).map_err(CommandError::database)?;
+                for value in positions.values_mut() {
+                    if *value >= destination {
+                        *value += 1
+                    }
+                }
+            }
+        }
+        let inserted = tx.execute("INSERT OR IGNORE INTO playlist_items(playlist_id,track_id,position) VALUES(?1,?2,?3)",params![playlist_id,track.id,destination]).map_err(CommandError::database)?;
         if let Some(old) = entry
             .replace_track_id
             .as_ref()
@@ -593,7 +772,38 @@ fn commit(
             )
             .map_err(CommandError::database)?;
         }
-        position += inserted as i64;
+        if let Some(old) = entry
+            .replace_track_id
+            .as_ref()
+            .filter(|old| *old != &track.id)
+        {
+            positions.remove(old);
+        }
+        if let Some(order) = entry.original_position {
+            if let Some(row) = archive
+                .as_mut()
+                .and_then(|a| a["rows"].as_array_mut())
+                .and_then(|rows| {
+                    rows.iter_mut()
+                        .find(|row| row["order"].as_u64() == Some(order as u64))
+                })
+            {
+                row["status"] = serde_json::json!("saved");
+                row["chosen"] = serde_json::json!({"track":{"id":track.id,"title":track.title,"durationSeconds":track.duration_seconds,"liked":false,"source":{"provider":"bilibili","bvid":track.bvid,"aid":track.aid,"cid":track.cid,"page":track.page,"uploaderId":track.uploader_id,"uploaderName":track.uploader_name}},"evidence":{"bvid":track.bvid,"cid":track.cid,"title":track.title,"detailsVerified":true}});
+            }
+        }
+        if inserted > 0 {
+            positions.insert(track.id.clone(), destination);
+        }
+        if let Some(order) = entry.original_position {
+            archived.retain(|(index, _)| *index != order);
+            archived.push((order, track.id.clone()));
+            archived.sort_unstable_by_key(|(index, _)| *index);
+        }
+        position = positions.values().max().map(|p| p + 1).unwrap_or(0);
+    }
+    if let Some(archive) = archive {
+        tx.execute("UPDATE playlist_import_archives SET document=?2,updated_at=CURRENT_TIMESTAMP WHERE playlist_id=?1",params![playlist_id,archive.to_string()]).map_err(CommandError::database)?;
     }
     tx.execute(
         "UPDATE playlists SET updated_at=strftime('%Y-%m-%d %H:%M:%f','now') WHERE id=?1",
@@ -602,6 +812,70 @@ fn commit(
     .map_err(CommandError::database)?;
     tx.commit().map_err(CommandError::database)?;
     PlaylistRepository::get(connection, playlist_id).map_err(CommandError::database)
+}
+
+fn connection_archive_rows(c: &Connection, id: &str) -> Vec<(usize, String)> {
+    c.query_row(
+        "SELECT document FROM playlist_import_archives WHERE playlist_id=?1",
+        [id],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    .and_then(|v| {
+        v["rows"].as_array().map(|rows| {
+            rows.iter()
+                .enumerate()
+                .filter_map(|(_i, row)| {
+                    row["chosen"]["track"]["id"].as_str().and_then(|id| {
+                        row["order"]
+                            .as_u64()
+                            .map(|order| (order as usize, id.to_owned()))
+                    })
+                })
+                .collect()
+        })
+    })
+    .unwrap_or_default()
+}
+#[tauri::command]
+pub fn playlist_import_archive(
+    database: State<'_, Database>,
+    expected_scope: String,
+    playlist_id: String,
+    document: Option<String>,
+) -> Result<Option<String>, CommandError> {
+    let c = database.0.lock().map_err(CommandError::database)?;
+    if scope(&c) != expected_scope {
+        return Err(CommandError::validation("账号已切换，请重新打开导入页面"));
+    }
+    if !playlist_id.starts_with("import:") || playlist_id.len() > 100 {
+        return Err(CommandError::validation("无效的导入歌单"));
+    }
+    if let Some(document) = document {
+        if document.len() > 8 * 1024 * 1024 {
+            return Err(CommandError::validation("导入进度过大"));
+        }
+        let value: Value = serde_json::from_str(&document)
+            .map_err(|_| CommandError::validation("导入进度无效"))?;
+        if value["playlistId"].as_str() != Some(playlist_id.as_str())
+            || value["scope"].as_str() != Some(expected_scope.as_str())
+            || !value["rows"]
+                .as_array()
+                .is_some_and(|r| r.len() <= MAX_SONGS)
+        {
+            return Err(CommandError::validation("导入进度身份无效"));
+        }
+        c.execute("INSERT INTO playlist_import_archives(playlist_id,document) VALUES(?1,?2) ON CONFLICT(playlist_id) DO UPDATE SET document=excluded.document,updated_at=CURRENT_TIMESTAMP",params![playlist_id,document]).map_err(CommandError::database)?;
+        return Ok(None);
+    }
+    c.query_row(
+        "SELECT document FROM playlist_import_archives WHERE playlist_id=?1",
+        [playlist_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(CommandError::database)
 }
 
 #[tauri::command]
@@ -625,6 +899,204 @@ pub fn playlist_import_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ordered_entry(cid: i64, order: Option<usize>) -> ImportEntry {
+        ImportEntry {
+            track: TrackInput {
+                id: format!("bilibili:BV1GJ411x7h7:{cid}"),
+                bvid: "BV1GJ411x7h7".into(),
+                aid: Some(1),
+                cid,
+                page: 1,
+                source_title: "视频".into(),
+                title: format!("歌曲{cid}"),
+                artist: None,
+                album: None,
+                cover_url: None,
+                duration_seconds: 120,
+                uploader_id: None,
+                uploader_name: None,
+            },
+            metadata: None,
+            replace_track_id: None,
+            original_position: order,
+        }
+    }
+    #[test]
+    fn filling_and_replacing_gaps_preserves_original_order_and_atomic_archive() {
+        let mut c = Connection::open_in_memory().unwrap();
+        crate::infrastructure::migrations::migrate(&c).unwrap();
+        let document = serde_json::json!({"rows":(0..4).map(|i|serde_json::json!({"order":i,"status":"missing"})).collect::<Vec<_>>()});
+        c.execute(
+            "INSERT INTO playlist_import_archives(playlist_id,document) VALUES('import:order',?1)",
+            [document.to_string()],
+        )
+        .unwrap();
+        commit(
+            &mut c,
+            "memory",
+            "import:order",
+            "原顺序",
+            &[ordered_entry(1, Some(0)), ordered_entry(3, Some(2))],
+        )
+        .unwrap();
+        // A normal addition can be prepended without consuming an original gap.
+        commit(
+            &mut c,
+            "memory",
+            "import:order",
+            "原顺序",
+            &[ordered_entry(99, None)],
+        )
+        .unwrap();
+        PlaylistRepository::add_tracks(
+            &c,
+            "import:order",
+            &["bilibili:BV1GJ411x7h7:99".into()],
+            false,
+        )
+        .unwrap();
+        commit(
+            &mut c,
+            "memory",
+            "import:order",
+            "原顺序",
+            &[ordered_entry(2, Some(1)), ordered_entry(4, Some(3))],
+        )
+        .unwrap();
+        let ids = |c: &Connection| {
+            PlaylistRepository::tracks(c, "import:order")
+                .unwrap()
+                .into_iter()
+                .map(|t| t.cid)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&c), vec![99, 1, 2, 3, 4]);
+        let mut replacement = ordered_entry(20, Some(1));
+        replacement.replace_track_id = Some("bilibili:BV1GJ411x7h7:2".into());
+        commit(&mut c, "memory", "import:order", "原顺序", &[replacement]).unwrap();
+        assert_eq!(ids(&c), vec![99, 1, 20, 3, 4]);
+        let archive = || {
+            c.query_row(
+                "SELECT document FROM playlist_import_archives WHERE playlist_id='import:order'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        let updated: Value = serde_json::from_str(&archive()).unwrap();
+        assert_eq!(
+            updated["rows"][1]["chosen"]["track"]["id"],
+            "bilibili:BV1GJ411x7h7:20"
+        );
+        let before = archive();
+        // A stale replacement and a duplicate must both leave playlist and archive intact.
+        let mut stale = ordered_entry(40, Some(1));
+        stale.replace_track_id = Some("bilibili:BV1GJ411x7h7:2".into());
+        assert!(commit(&mut c, "memory", "import:order", "原顺序", &[stale]).is_err());
+        let mut duplicate = ordered_entry(3, Some(1));
+        duplicate.replace_track_id = Some("bilibili:BV1GJ411x7h7:20".into());
+        assert!(commit(&mut c, "memory", "import:order", "原顺序", &[duplicate]).is_err());
+        assert_eq!(ids(&c), vec![99, 1, 20, 3, 4]);
+        assert_eq!(
+            c.query_row(
+                "SELECT document FROM playlist_import_archives WHERE playlist_id='import:order'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            before
+        );
+        c.execute_batch("CREATE TRIGGER fail_archive BEFORE UPDATE ON playlist_import_archives BEGIN SELECT RAISE(ABORT,'disk write failed'); END;").unwrap();
+        let mut replacement = ordered_entry(30, Some(1));
+        replacement.replace_track_id = Some("bilibili:BV1GJ411x7h7:20".into());
+        assert!(commit(&mut c, "memory", "import:order", "原顺序", &[replacement]).is_err());
+        assert_eq!(ids(&c), vec![99, 1, 20, 3, 4]);
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM source_items WHERE cid=30", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT document FROM playlist_import_archives WHERE playlist_id='import:order'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            before
+        );
+    }
+    #[test]
+    fn recognizes_all_supported_platforms_and_rejects_lookalike_hosts() {
+        for (url, source, id) in [
+            (
+                "https://m.kugou.com/songlist/gcid_abc123/?uid=1",
+                "kugou",
+                "gcid_abc123",
+            ),
+            (
+                "https://www.kugou.com/yy/special/single/123.html",
+                "kugou",
+                "special:123",
+            ),
+            (
+                "https://m.kuwo.cn/h5app/playlist/123?t=qqfriend",
+                "kuwo",
+                "123",
+            ),
+            (
+                "https://h5.nf.migu.cn/app/v4/p/share/playlist/index.html?id=123",
+                "migu",
+                "123",
+            ),
+            (
+                "https://music.migu.cn/v5/#/playlist?playlistId=456",
+                "migu",
+                "456",
+            ),
+        ] {
+            let parsed = parse_input(url).unwrap();
+            assert_eq!(playlist_id(&parsed), Some((source, id.to_owned())));
+        }
+        for url in [
+            "https://m.kugou.com.evil.test/songlist/gcid_a/",
+            "https://127.0.0.1/playlist/1",
+            "https://evil.test/?url=https://m.kuwo.cn/playlist/1",
+        ] {
+            assert!(parse_input(url).is_err());
+        }
+    }
+    #[tokio::test]
+    #[ignore = "live public music playlist metadata"]
+    async fn live_additional_playlist_metadata() {
+        for url in [
+            "https://m.kugou.com/songlist/gcid_3zdr3tr0z1z024/",
+            "https://www.kuwo.cn/playlist_detail/2858093057",
+            "https://h5.nf.migu.cn/app/v4/p/share/playlist/index.html?id=184187437",
+        ] {
+            let playlist = read_playlist(url).await.unwrap();
+            println!(
+                "{}: {} readable / {} reported, {} unavailable",
+                playlist.source,
+                playlist.songs.len(),
+                playlist.reported_count,
+                playlist.unavailable_count
+            );
+            assert!(!playlist.songs.is_empty());
+            if playlist.source != "kuwo" {
+                assert!(
+                    playlist.songs.len() > 100,
+                    "must read beyond the first page"
+                );
+            }
+            assert_eq!(
+                playlist.songs.len() + playlist.unavailable_count,
+                playlist.reported_count
+            );
+        }
+    }
     #[tokio::test]
     #[ignore = "live public playlist metadata"]
     async fn live_external_playlist_metadata() {
@@ -731,6 +1203,7 @@ mod tests {
                 cover_url: None,
             }),
             replace_track_id: None,
+            original_position: None,
         };
         let rows = vec![entry(1), entry(2)];
         assert!(commit(&mut c, "other-profile", "import:test", "歌单", &rows).is_err());

@@ -10,9 +10,7 @@ import { useDownloadRequest,type DownloadOptions } from './downloadRequest'
 import { isAndroid } from '../../services/platform'
 import { androidDownloadDestination, androidDownloadDestinationKey } from '../../services/androidDownloads'
 import { AndroidDownloadDestinationField } from './AndroidDownloadDestination'
-const storageKey='bilimusic-download-options-v1'
-function remembered():Pick<DownloadOptions,'audioId'|'exportFormat'>{try{const value=JSON.parse(localStorage.getItem(storageKey)||'{}');return{audioId:value.exportFormat==='flac'?30251:Number.isSafeInteger(value.audioId)&&value.audioId>=0&&value.audioId<=40000?value.audioId:0,exportFormat:['auto','original','flac'].includes(value.exportFormat)?value.exportFormat:'auto'}}catch{return{audioId:0,exportFormat:'auto'}}}
-const batchChoices=[{id:30251,label:'Hi-Res 无损 · FLAC'},{id:30280,label:'高品质 · AAC（192K 档）'},{id:30232,label:'标准 · AAC（132K 档）'},{id:30216,label:'流畅 · AAC（64K 档）'}]
+import { downloadOptionsStorageKey as storageKey, rememberedDownloadOptions as remembered, batchDownloadChoices as batchChoices } from './downloadOptions'
 export function DownloadDialogHost(){const request=useDownloadRequest(state=>state.request);return request?<DownloadDialog key={`${accountEpoch()}:${request.tracks.map(t=>t.id).join(',')}`} request={request}/>:null}
 function DownloadDialog({request}:{request:NonNullable<ReturnType<typeof useDownloadRequest.getState>['request']>}){
  const client=useQueryClient(),batchBusy=useDownloadBatch(state=>state.busy)

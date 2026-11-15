@@ -8,8 +8,10 @@ const output = await build({
   plugins: [{ name: 'statistics-boundaries', setup(builder) {
     builder.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => ({ path: 'invoke', namespace: 'fixture' }))
     builder.onResolve({ filter: /accountScope$/ }, () => ({ path: 'account', namespace: 'fixture' }))
+    builder.onResolve({ filter: /playlistImport$/ }, () => ({ path: 'import-job', namespace: 'fixture' }))
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({ contents: path === 'invoke'
       ? 'export const invoke=(...args)=>globalThis.statisticsSyncTest.invoke(...args)'
+      : path === 'import-job' ? 'export const usePlaylistImport={getState:()=>({job:globalThis.statisticsSyncTest.job})}'
       : 'export const accountEpoch=()=>globalThis.statisticsSyncTest.epoch' }))
   } }],
 })
@@ -30,7 +32,7 @@ function setup(t, invoke = async () => ({ statistics: false })) {
 test('one lifecycle bridge reports hints; the Rust policy owns cadence', async t => {
   const f = setup(t)
   await flush()
-  assert.deepEqual(f.calls, [['sync_background', { hint: 'configured' }]])
+  assert.deepEqual(f.calls, [['sync_background', { hint: 'configured', bulkImport: false }]])
   f.tick(); await flush()
   window.dispatchEvent(new Event('bilimusic-data-changed')); await flush()
   window.dispatchEvent(new Event('bilimusic-statistics-sync-requested')); await flush()
@@ -77,4 +79,15 @@ test('IPC failures do not produce a frontend retry loop', async t => {
   assert.equal(f.invalidations.length, 0)
   f.tick(); await flush()
   assert.equal(f.calls.length, 2)
+})
+test('bulk import hints coalesce library work until matching and saving finish', async t => {
+  const f = setup(t); await flush()
+  for (const state of ['matching', 'saving', 'waiting']) {
+    f.job = { state }; f.tick(); await flush()
+    assert.equal(f.calls.at(-1)[1].bulkImport, true)
+  }
+  for (const state of ['paused', 'done']) {
+    f.job = { state }; f.tick(); await flush()
+    assert.equal(f.calls.at(-1)[1].bulkImport, false)
+  }
 })

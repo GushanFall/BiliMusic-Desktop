@@ -373,15 +373,28 @@ pub fn playlist_delete(
 #[tauri::command]
 pub async fn bili_video_parts(
     provider: State<'_, BilibiliProvider>,
+    database: State<'_, Database>,
     bvid: String,
 ) -> Result<VideoParts, CommandError> {
     if !valid_bvid(&bvid) {
         return Err(CommandError::validation("无效的 BV 号"));
     }
-    provider
+    let profile = database
+        .0
+        .lock()
+        .ok()
+        .and_then(|c| c.path().map(str::to_owned));
+    let detail = provider
         .video_parts(&bvid)
         .await
-        .map_err(CommandError::provider)
+        .map_err(CommandError::provider)?;
+    if let Ok(connection) = database.0.lock() {
+        if connection.path() == profile.as_deref() {
+            // Cache source names separately from user edits; never create history or favorites.
+            let _ = crate::sync::cache_source_titles(&connection, &detail);
+        }
+    }
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -436,16 +449,42 @@ pub async fn bili_playback_source(
 #[tauri::command]
 pub async fn bili_warm_playback(
     provider: State<'_, BilibiliProvider>,
+    database: State<'_, Database>,
+    media_proxy: State<'_, MediaProxy>,
     bvid: String,
     cid: i64,
 ) -> Result<(), CommandError> {
     if !valid_bvid(&bvid) || cid <= 0 {
         return Err(CommandError::validation("无效的播放源标识"));
     }
-    provider
-        .warm_playback(&bvid, cid)
+    let quality = {
+        let c = database
+            .0
+            .lock()
+            .map_err(|_| CommandError::database("数据库正忙"))?;
+        crate::interface::media::preferences(&c).map_err(CommandError::database)?
+    };
+    let (source, initial) = provider
+        .playback_startup_sources(&bvid, cid, quality.audio_id)
         .await
-        .map_err(CommandError::provider)
+        .map_err(CommandError::provider)?;
+    let (quality, source) = initial
+        .map(|s| (s.quality_id, s))
+        .unwrap_or((quality.audio_id, source));
+    let url = media_proxy
+        .register_audio(
+            &format!("bilibili:{bvid}:{cid}"),
+            &bvid,
+            cid,
+            quality,
+            source,
+        )
+        .await;
+    media_proxy
+        .preload_start(&url)
+        .await
+        .map_err(CommandError::provider)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -842,7 +881,7 @@ pub fn downloads_list(database: State<'_, Database>) -> Result<Vec<DownloadRecor
         .0
         .lock()
         .map_err(|_| CommandError::database("数据库正忙"))?;
-    DownloadRepository::list(&connection).map_err(CommandError::database)
+    DownloadRepository::list_with_tracks(&connection).map_err(CommandError::database)
 }
 
 #[tauri::command]

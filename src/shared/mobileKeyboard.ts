@@ -1,7 +1,7 @@
 import { isIOS, isMobile } from '../services/platform'
 import { visibleViewport } from './visibleViewport'
 
-export function installMobileKeyboard() {
+export function installMobileKeyboard(options: { scrollContainers?: string; topInset?: number; onDismiss?: () => void } = {}) {
   if (!isMobile) return
   const viewport = window.visualViewport
   const root = document.documentElement
@@ -30,11 +30,13 @@ export function installMobileKeyboard() {
       schedule()
     }
     if (!input || !visible.keyboardOpen) return
-    const container = input.closest<HTMLElement>('.mobile-page-content,.stage-scroll,.import-body,.comments-scroll,.comment-compose,.collection-dialog,.lyric-chooser')
+    const container = input.closest<HTMLElement>(options.scrollContainers || '.mobile-page-content,.stage-scroll,.import-body,.comments-scroll,.comment-compose,.collection-dialog,.lyric-chooser')
     const hiddenBy = input.getBoundingClientRect().bottom - (visible.top + visible.height - 16)
     // The active form owns scrolling. Never scroll body or restore an old
     // position over a user's scroll after closing the keyboard.
     if (container && hiddenBy > 0 && container.scrollHeight > container.clientHeight) container.scrollTop += hiddenBy
+    const aboveBy = visible.top + (options.topInset || 0) - input.getBoundingClientRect().top
+    if (container && aboveBy > 0) container.scrollTop = Math.max(0, container.scrollTop - aboveBy)
   }
   const schedule = () => {
     if (scheduled) return
@@ -51,8 +53,8 @@ export function installMobileKeyboard() {
   // Keyboard dismissal is a navigation step, before dismissing a dialog/page.
   window.addEventListener('bilimusic-back', event => {
     if (!root.dataset.keyboardOpen) return
-    const focused = document.activeElement
-    if (focused instanceof HTMLElement) focused.blur()
+    if (options.onDismiss) options.onDismiss()
+    else { const focused = document.activeElement; if (focused instanceof HTMLElement) focused.blur() }
     event.preventDefault(); event.stopImmediatePropagation()
   }, true)
   update()

@@ -25,7 +25,8 @@ export function CollectionDialog({ title, onClose, children, className = '', mob
     }
     const back=(e:Event)=>{if(top() && !document.querySelector('[data-overflow-panel], .track-context-menu, .playlist-picker-layer')){e.preventDefault();e.stopImmediatePropagation();dismiss.current()}}
     document.addEventListener('keydown',keyboard,true);window.addEventListener('bilimusic-back',back,true)
-    layer.current?.querySelector<HTMLElement>('input,button')?.focus()
+    const initialFocus=layer.current?.querySelector<HTMLElement>('[data-dialog-autofocus]') || layer.current?.querySelector<HTMLElement>('input,button')
+    initialFocus?.focus()
     return()=>{document.removeEventListener('keydown',keyboard,true);window.removeEventListener('bilimusic-back',back,true);if(root)root.inert=wasInert;if(previous?.isConnected&&!previous.closest('[inert]'))previous.focus()}
   },[])
   const resetDrag=()=>{drag.current=null;layer.current?.style.removeProperty('--sheet-drag-y')}

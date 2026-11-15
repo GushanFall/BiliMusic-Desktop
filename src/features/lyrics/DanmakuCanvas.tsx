@@ -1,3 +1,4 @@
+import { danmakuX, layoutDanmaku, type DanmakuPlacement } from './danmakuLayout'
 import { memo, useEffect, useRef } from 'react'
 import type { DanmakuItem } from '../../services/desktopApi'
 import { playbackClock, usePlayerStore } from '../player/playerStore'
@@ -8,23 +9,30 @@ export const DanmakuCanvas = memo(function DanmakuCanvas({ items, scale, opacity
     const canvas = ref.current
     const context = canvas?.getContext('2d')
     if (!canvas || !context) return
-    const stride = Math.round(1 / density)
+    const stride = Math.max(1, Math.round(1 / Math.max(.125, Math.min(1, density))))
     const sorted = items
       .filter(item => item.mode >= 1 && item.mode <= 6)
       .sort((a, b) => a.timeSeconds - b.timeSeconds)
       .filter((_, index) => index % stride === 0)
     const sprites = new Map<number, { canvas: HTMLCanvasElement; width: number; height: number }>()
     let width = 0, height = 0, ratio = 1, frame = 0
+    let placements: DanmakuPlacement[] = []
+    const measure = (item: DanmakuItem) => {
+      const font = Math.max(12, Math.min(56, item.fontSize * scale))
+      context.font = `600 ${font}px system-ui, sans-serif`
+      return { width: Math.min(context.measureText(item.text.slice(0, 120)).width + 8, Math.max(640, width * 2)), height: font * 1.4 }
+    }
     const draw = () => {
       context.clearRect(0, 0, width, height)
       context.globalAlpha = opacity
       const time = playbackClock()
-      let low = 0, high = sorted.length
-      while (low < high) { const middle = (low + high) >>> 1; if (sorted[middle].timeSeconds <= time) low = middle + 1; else high = middle }
+      let low = 0, high = placements.length
+      while (low < high) { const middle = (low + high) >>> 1; if (placements[middle].time <= time) low = middle + 1; else high = middle }
       let visible = 0
-      for (let index = low - 1; index >= Math.max(0, low - 100) && visible < 40; index--) {
+      for (let at = Math.max(0, low - 100); at < low && visible < 40; at++) {
+        const placement = placements[at], index = placement.index
         const item = sorted[index], age = time - item.timeSeconds
-        if (age > 8) break
+        if (age > 8) continue
         const fixed = item.mode === 4 || item.mode === 5
         if (fixed && age > 4) continue
         let sprite = sprites.get(index)
@@ -39,10 +47,7 @@ export const DanmakuCanvas = memo(function DanmakuCanvas({ items, scale, opacity
           sprite = { canvas: image, width: textWidth, height: textHeight }; sprites.set(index, sprite)
           if (sprites.size > 80) sprites.delete(sprites.keys().next().value!)
         }
-        const lanes = Math.max(1, Math.floor(height * .8 * density / sprite.height))
-        const y = item.mode === 4 ? height - sprite.height * (1 + index % Math.min(3, lanes)) : 8 + (index % lanes) * sprite.height
-        const x = fixed ? (width - sprite.width) / 2 : item.mode === 6 ? -sprite.width + (width + sprite.width) * age / 8 : width - (width + sprite.width) * age / 8
-        context.drawImage(sprite.canvas, x, y, sprite.width, sprite.height); visible++
+        context.drawImage(sprite.canvas, danmakuX(placement, time, width), placement.y, sprite.width, sprite.height); visible++
       }
     }
     const tick = () => { frame = 0; if (document.hidden) return; draw(); if (usePlayerStore.getState().status === 'playing') frame = requestAnimationFrame(tick) }
@@ -57,7 +62,7 @@ export const DanmakuCanvas = memo(function DanmakuCanvas({ items, scale, opacity
       width = nextWidth; height = nextHeight; ratio = nextRatio
       canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio)
       context.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0)
-      sprites.clear(); schedule()
+      sprites.clear(); placements = layoutDanmaku(sorted, width, height, density, measure); schedule()
     }
     const observer = new ResizeObserver(resize)
     observer.observe(canvas)

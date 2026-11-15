@@ -1,25 +1,30 @@
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { accountEpoch } from './accountScope'
-import { commandErrorMessage, getVideoParts, inDesktopShell, searchBilibili, type MetadataPatch, type Playlist } from './desktopApi'
+import { commandErrorMessage, getVideoParts, inDesktopShell, listPlaylistTracks, searchBilibili, type MetadataPatch, type Playlist } from './desktopApi'
 import { toTrack } from './collectionTrack'
 import { chooseImportMatch, importKeyword, type ImportChoice, type ImportPlaylist, type ImportSong } from './playlistImportModel'
 import { rankDurationFirstSongCandidates } from './externalSongMatch'
 import type { Track } from '../domain/track'
+import { ImportRequestPolicy, isImportRateLimit } from './playlistImportPolicy'
 
-export type ImportRow = { song: ImportSong; status:'pending'|'matched'|'missing'|'saved'; candidates:ImportChoice[]; chosen?:ImportChoice; message?:string }
-export type ImportJob = { id:string; scope:string; name:string; source:string; rows:ImportRow[]; playlistId:string; state:'ready'|'matching'|'paused'|'waiting'|'saving'|'done'; message:string; retries:number }
+export type ImportRow = { order?:number; song: ImportSong; status:'pending'|'matched'|'missing'|'saved'; candidates:ImportChoice[]; chosen?:ImportChoice; message?:string }
+export type ImportJob = { id:string; scope:string; name:string; source:string; rows:ImportRow[]; playlistId:string; state:'ready'|'matching'|'paused'|'waiting'|'saving'|'done'; message:string; retries:number; retryAt?:number }
 export const usePlaylistImport = create<{job:ImportJob|null;scope:string}>(()=>({job:null,scope:''}))
 let controller: AbortController | undefined
 let booting: Promise<void> | undefined
 let checkpointChain = Promise.resolve()
-let lastSearch = 0
+const requestPolicy = new ImportRequestPolicy()
+const searchCache = new Map<string,{expires:number;items:Awaited<ReturnType<typeof searchBilibili>>['items']}>()
 let runEpoch = 0
 let activeWrites = 0
+const pendingCommits = new Set<Promise<Playlist>>()
+let checkpointError: unknown
 let searchGate = Promise.resolve()
+let detailGate = Promise.resolve()
 let detailRequests = 0
 const detailWaiters: (()=>void)[] = []
-const MATCH_CONCURRENCY = 3
+const MATCH_CONCURRENCY = 2
 
 const abortError = () => new DOMException('Stopped','AbortError')
 const delay = (ms:number,signal:AbortSignal) => new Promise<void>((resolve,reject)=>{
@@ -36,14 +41,16 @@ function database() {
     request.onerror=()=>reject(request.error)
   })
 }
-function checkpoint(job:ImportJob) {
+function checkpoint(job:ImportJob,active=true) {
   // Persist the chosen result, not every search candidate or response body.
-  const snapshot={...job,rows:job.rows.map(row=>({...row,candidates:[]}))}
+  const snapshot={...job,rows:job.rows.map(row=>({...row,candidates:[],chosen:row.chosen?{track:row.chosen.track,evidence:{bvid:row.chosen.track.source.bvid,cid:row.chosen.track.source.cid,title:row.chosen.track.title,detailsVerified:true}}:undefined}))}
   checkpointChain=checkpointChain.catch(()=>undefined).then(async()=>{
-    const db=await database()
-    try { await new Promise<void>((resolve,reject)=>{const tx=db.transaction('jobs','readwrite');tx.objectStore('jobs').put(snapshot,job.scope);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error)}) }
-    finally { db.close() }
-  }).catch(()=>undefined)
+    if(inDesktopShell)await invoke('playlist_import_archive',{expectedScope:job.scope,playlistId:job.playlistId,document:JSON.stringify(snapshot)})
+    checkpointError=undefined
+    try {const db=await database()
+    try { await new Promise<void>((resolve,reject)=>{const tx=db.transaction('jobs','readwrite');if(active)tx.objectStore('jobs').put(snapshot,job.scope);tx.objectStore('jobs').put(snapshot,`${job.scope}:playlist:${job.playlistId}`);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error)}) }
+    finally { db.close() }}catch(error){if(!inDesktopShell)throw error}
+  }).catch(error=>{checkpointError=error})
 }
 function publish(job:ImportJob,persist=false) { usePlaylistImport.setState({job:{...job,rows:[...job.rows]}});if(persist)checkpoint(job) }
 export async function bootPlaylistImport() {
@@ -59,6 +66,8 @@ export async function bootPlaylistImport() {
       const saved=await new Promise<ImportJob|undefined>((resolve,reject)=>{const req=db.transaction('jobs').objectStore('jobs').get(scope);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})
       db.close()
       if(saved && saved.scope===scope && Array.isArray(saved.rows) && saved.rows.length<=5000 && epoch===accountEpoch()) {
+        saved.rows.forEach((row,index)=>{row.order??=index})
+        requestPolicy.restore(saved.retryAt,saved.retries)
         if(!['done','ready'].includes(saved.state))saved.state='paused'
         saved.message=saved.state==='paused'?'上次进度已保留，可以继续导入':saved.message
         publish(saved)
@@ -72,7 +81,7 @@ export function newPlaylistImport(playlist:ImportPlaylist,name:string) {
   const scope=usePlaylistImport.getState().scope
   if(!scope)throw new Error('导入页面尚未准备好，请重试')
   const id=crypto.randomUUID()
-  const job:ImportJob={id,scope,name:name.trim().slice(0,80)||playlist.name.slice(0,80),source:playlist.source,playlistId:`import:${id}`,rows:playlist.songs.map(song=>({song,status:'pending',candidates:[]})),state:'ready',message:'',retries:0}
+  const job:ImportJob={id,scope,name:name.trim().slice(0,80)||playlist.name.slice(0,80),source:playlist.source,playlistId:`import:${id}`,rows:playlist.songs.map((song,order)=>({song,order,status:'pending',candidates:[]})),state:'ready',message:'',retries:0}
   publish(job,true)
 }
 export function pausePlaylistImport() {
@@ -106,20 +115,33 @@ export async function replaceImportedPlaylistEntry(playlist:Playlist,original:Tr
   }
 }
 
-function limited(error:unknown) {return /(?:412|429|-352|-509|-799)/.test(typeof error==='object'&&error&&'message'in error?String(error.message):String(error))}
-async function search(keyword:string,signal:AbortSignal) {
+const limited = isImportRateLimit
+async function search(keyword:string,signal:AbortSignal,interactive=false) {
+  const epoch=accountEpoch(),key=`${epoch}:${keyword.trim()}`
+  const cached=searchCache.get(key)
+  if(cached && cached.expires>Date.now()){if(signal.aborted)throw abortError();return cached.items}
+  if(interactive && requestPolicy.blockedUntil>Date.now())throw new Error('B 站暂时限制了搜索，请稍后再查找')
   // Serialize dispatch times, not responses: a slow search must not stall every song.
   const turn=searchGate.catch(()=>undefined).then(async()=>{
-    await delay(Math.max(0,1200-(Date.now()-lastSearch)),signal)
-    if(signal.aborted)throw abortError()
-    lastSearch=Date.now()
+    while(requestPolicy.searchWait()>0){
+      if(interactive && requestPolicy.blockedUntil>Date.now())throw new Error('B 站暂时限制了搜索，请稍后再查找')
+      await delay(requestPolicy.searchWait(),signal)
+    }
+    if(signal.aborted||epoch!==accountEpoch())throw abortError()
+    requestPolicy.searched()
   })
   searchGate=turn.catch(()=>undefined)
   await turn
   if(signal.aborted)throw abortError()
-  const result=await searchBilibili(keyword)
-  if(signal.aborted)throw abortError()
-  return result.items
+  const shared=searchCache.get(key)
+  if(shared && shared.expires>Date.now())return shared.items
+  try {
+    const result=await searchBilibili(keyword)
+    if(signal.aborted||epoch!==accountEpoch())throw abortError()
+    searchCache.set(key,{expires:Date.now()+(result.items.length?600_000:60_000),items:result.items})
+    while(searchCache.size>100)searchCache.delete(searchCache.keys().next().value!)
+    return result.items
+  }catch(error){if(epoch===accountEpoch()&&limited(error))requestPolicy.restricted();throw error}
 }
 async function videoDetail(bvid:string,signal:AbortSignal) {
   await new Promise<void>((resolve,reject)=>{
@@ -129,33 +151,41 @@ async function videoDetail(bvid:string,signal:AbortSignal) {
     if(detailRequests<MATCH_CONCURRENCY)start()
     else{detailWaiters.push(start);signal.addEventListener('abort',cancel,{once:true})}
   })
-  try{if(signal.aborted)throw abortError();return await getVideoParts(bvid)}
+  const epoch=accountEpoch()
+  try{
+    const turn=detailGate.catch(()=>undefined).then(async()=>{
+      while(requestPolicy.detailWait()>0)await delay(requestPolicy.detailWait(),signal)
+      if(signal.aborted||epoch!==accountEpoch())throw abortError()
+      requestPolicy.detailed()
+    })
+    detailGate=turn.catch(()=>undefined);await turn
+    return await getVideoParts(bvid)
+  }catch(error){if(epoch===accountEpoch()&&limited(error))requestPolicy.restricted();throw error}
   finally{detailRequests--;detailWaiters.shift()?.()}
 }
 export async function findImportCandidates(song:ImportSong,signal:AbortSignal,manualKeyword?:string):Promise<ImportChoice[]> {
   const choices:ImportChoice[]=[],seen=new Set<string>()
   const queries=manualKeyword?[manualKeyword]:[importKeyword(song),importKeyword(song,true)]
   for(const keyword of [...new Set(queries)]) {
-    const result=await search(keyword,signal)
+    const result=await search(keyword,signal,Boolean(manualKeyword))
     // Search duration is a coarse priority only; never import until actual parts are fetched.
     const provisional=rankDurationFirstSongCandidates(song,result.map(item=>({bvid:item.bvid,title:item.title,uploaderName:item.uploaderName,durationSeconds:item.durationSeconds,partCount:1,description:item.description})))
     const selected=provisional.ranked.slice(0,3).filter(item=>{if(seen.has(item.candidate.bvid))return false;seen.add(item.candidate.bvid);return true})
-    const results=await Promise.allSettled(selected.map(async item=>{
+    for(const item of selected){
       try {
         const detail=await videoDetail(item.candidate.bvid,signal)
         if(signal.aborted)throw abortError()
-        return detail.parts.map(part=>{
+        choices.push(...detail.parts.map(part=>{
           const track=toTrack(detail,part)
           return {track,evidence:{bvid:detail.bvid,cid:part.cid,title:track.title,videoTitle:detail.title,partTitle:part.title,
             description:result.find(row=>row.bvid===detail.bvid)?.description,uploaderName:detail.uploaderName,durationSeconds:part.durationSeconds,partCount:detail.parts.length,detailsVerified:true}}
-        })
+        }))
       }catch(error){
         const message=typeof error==='object'&&error&&'message'in error?String(error.message):String(error)
         if(signal.aborted||limited(error)||!/-404|-62002|不存在|已删除|不可见|无权限/.test(message))throw error
-        return []
       }
-    }))
-    for(const response of results){if(response.status==='rejected')throw response.reason;choices.push(...response.value)}
+      if(!manualKeyword && chooseImportMatch(song,choices))break
+    }
     if(chooseImportMatch(song,choices))break
   }
   const ranked=rankDurationFirstSongCandidates(song,choices.map(choice=>choice.evidence)).ranked
@@ -164,15 +194,53 @@ export async function findImportCandidates(song:ImportSong,signal:AbortSignal,ma
   return best?[best,...ordered.filter(choice=>choice.track.id!==best.track.id)].slice(0,5):ordered
 }
 
+export async function loadPlaylistReview(playlist:Playlist,tracks:Track[],scope:string):Promise<ImportJob> {
+  const active=usePlaylistImport.getState().job
+  if(active?.playlistId===playlist.id && active.scope===scope && ['matching','saving','waiting'].includes(active.state))pausePlaylistImport()
+  if(pendingCommits.size){
+    await Promise.allSettled([...pendingCommits])
+    tracks=await listPlaylistTracks(playlist.id)
+  }
+  await checkpointChain
+  let archived:ImportJob|undefined
+  if(inDesktopShell){const raw=await invoke<string|null>('playlist_import_archive',{expectedScope:scope,playlistId:playlist.id});if(raw)archived=JSON.parse(raw)}
+  else {try{const db=await database();archived=await new Promise(resolve=>{const r=db.transaction('jobs').objectStore('jobs').get(`${scope}:playlist:${playlist.id}`);r.onsuccess=()=>resolve(r.result);r.onerror=()=>resolve(undefined)});db.close()}catch{/* Older imports may not have an archive. */}}
+  const fallback=makePlaylistReview(playlist,tracks,scope)
+  if(!archived||archived.scope!==scope||archived.playlistId!==playlist.id||!Array.isArray(archived.rows))return fallback
+  const available=new Map(tracks.map(track=>[track.id,track])),represented=new Set<string>()
+  const rows:ImportRow[]=[]
+  archived.rows.forEach((row,order)=>{
+    const current=row.chosen&&available.get(row.chosen.track.id)
+    if(current){represented.add(current.id);rows.push({...row,order:row.order??order,status:'saved',candidates:[],chosen:{...row.chosen!,track:current}})}
+    else if(row.status!=='saved')rows.push({...row,order:row.order??order,status:'missing',chosen:undefined,candidates:[]})
+  })
+  rows.push(...fallback.rows.filter(row=>!represented.has(row.chosen!.track.id)))
+  return {...archived,rows,state:'done',name:playlist.name}
+}
+export async function acceptReviewCandidate(job:ImportJob,index:number,choice:ImportChoice) {
+  const row=job.rows[index];if(!row)return job
+  const epoch=accountEpoch()
+  await commitImportTracks(job.scope,job.playlistId,job.name,[{track:choice.track,metadata:{title:row.song.title,artist:row.song.artists.join(' / ')||undefined,album:row.song.album,coverUrl:row.song.coverUrl||choice.track.coverUrl},replaceTrackId:row.chosen?.track.id,originalPosition:row.order}])
+  if(epoch!==accountEpoch())return job
+  const next={...job,rows:job.rows.map((value,i)=>i===index?{...value,status:'saved' as const,chosen:choice,candidates:[]}:value)}
+  const active=usePlaylistImport.getState().job
+  if(active?.id===next.id && active.scope===next.scope)publish({...next,state:active.state==='done'?'done':'paused'},true)
+  else checkpoint(next,false)
+  await checkpointChain;if(checkpointError)throw checkpointError
+  return next
+}
 function toInput(track:Track) {return {id:track.id,bvid:track.source.bvid,aid:track.source.aid,cid:track.source.cid,page:track.source.page,sourceTitle:track.videoTitle||track.title,title:track.title,artist:track.artist,album:track.album,coverUrl:track.coverUrl,durationSeconds:track.durationSeconds,uploaderId:track.source.uploaderId,uploaderName:track.source.uploaderName}}
-export async function commitImportTracks(scope:string,playlistId:string,name:string,entries:{track:Track;metadata?:MetadataPatch;replaceTrackId?:string}[]) {
+export async function commitImportTracks(scope:string,playlistId:string,name:string,entries:{track:Track;metadata?:MetadataPatch;replaceTrackId?:string;originalPosition?:number}[]) {
   activeWrites++
+  let request:Promise<Playlist>|undefined
   try {
-    const playlist=await invoke<Playlist>('playlist_import_commit',{expectedScope:scope,playlistId,name,entries:entries.map(entry=>({...entry,track:toInput(entry.track)}))})
+    request=invoke<Playlist>('playlist_import_commit',{expectedScope:scope,playlistId,name,entries:entries.map(entry=>({...entry,track:toInput(entry.track)}))})
+    pendingCommits.add(request)
+    const playlist=await request
     window.dispatchEvent(new Event('bilimusic-data-changed'))
     window.dispatchEvent(new Event('bilimusic-import-updated'))
     return playlist
-  }finally{activeWrites--}
+  }finally{activeWrites--;if(request)pendingCommits.delete(request)}
 }
 async function saveMatched(job:ImportJob,signal:AbortSignal,epoch:number) {
   if(signal.aborted||epoch!==accountEpoch())throw abortError()
@@ -180,7 +248,10 @@ async function saveMatched(job:ImportJob,signal:AbortSignal,epoch:number) {
   const pending=job.rows.findIndex(row=>row.status==='pending')
   const batch=job.rows.slice(0,pending<0?job.rows.length:pending).filter(row=>row.status==='matched'&&row.chosen).slice(0,100)
   if(!batch.length)return
-  await commitImportTracks(job.scope,job.playlistId,job.name,batch.map(row=>({track:row.chosen!.track,metadata:{title:row.song.title,artist:row.song.artists.join(' / ')||undefined,album:row.song.album,coverUrl:row.song.coverUrl||row.chosen!.track.coverUrl}})))
+  await checkpointChain
+  if(checkpointError)throw checkpointError
+  if(signal.aborted||epoch!==accountEpoch())throw abortError()
+  await commitImportTracks(job.scope,job.playlistId,job.name,batch.map(row=>({originalPosition:row.order??job.rows.indexOf(row),track:row.chosen!.track,metadata:{title:row.song.title,artist:row.song.artists.join(' / ')||undefined,album:row.song.album,coverUrl:row.song.coverUrl||row.chosen!.track.coverUrl}})))
   // A pause after the command was sent must still remember that this batch committed.
   if(epoch!==accountEpoch()||usePlaylistImport.getState().job?.id!==job.id)return
   batch.forEach(row=>{row.status='saved';row.candidates=[]})
@@ -193,9 +264,16 @@ export async function runPlaylistImport(retryMissing=false) {
   if(!job)return
   const own=++runEpoch,epoch=accountEpoch(),abort=new AbortController();controller=abort
   const signal=abort.signal
+  requestPolicy.restore(job.retryAt,job.retries)
+  if(requestPolicy.blockedUntil>Date.now())job.retryAt=Math.max(job.retryAt||0,requestPolicy.blockedUntil)
   if(retryMissing)job.rows.forEach(row=>{if(row.status==='missing')row.status='pending'})
   job.state='matching';job.message='正在匹配歌曲';publish(job,true)
   try {
+    if(job.retryAt && job.retryAt>Date.now()){
+      job.state='waiting';job.message='B 站暂时限制了搜索，等待后继续';publish(job,true)
+      while(job.retryAt>Date.now())await delay(job.retryAt-Date.now(),signal)
+      job.state='matching';job.message='正在匹配歌曲';publish(job,true)
+    }
     await saveMatched(job,signal,epoch)
     const pending=job.rows.filter(row=>row.status==='pending')
     let next=0,failure:unknown,failed=false,writes=Promise.resolve()
@@ -210,7 +288,6 @@ export async function runPlaylistImport(retryMissing=false) {
           row.chosen=chooseImportMatch(row.song,choices);row.candidates=[]
           row.status=row.chosen?'matched':'missing'
           row.message=row.chosen?undefined:'暂未找到合适版本'
-          job.retries=0
           publish(job)
           // Serialize writes while network requests from other workers continue.
           writes=writes.then(async()=>{
@@ -233,11 +310,12 @@ export async function runPlaylistImport(retryMissing=false) {
     job.state='done';job.message='导入完成';publish(job,true)
   }catch(error) {
     if(runEpoch===own&&epoch===accountEpoch()&&usePlaylistImport.getState().job?.id===job.id) {
+      if(limited(error))job.retryAt=requestPolicy.restricted(job.retries)
       if(limited(error)&&job.retries<2){
         job.retries++;job.state='waiting';job.message='B 站请求较多，稍后自动继续';publish(job,true)
         const waiting=new AbortController();controller=waiting
         try{
-          await delay(60_000*job.retries,waiting.signal)
+          while(job.retryAt!>Date.now())await delay(job.retryAt!-Date.now(),waiting.signal)
           await restartAfterWait(job,own,epoch,waiting)
         }catch{/* A user pause/stop already published its state. */}
       }else{
@@ -262,10 +340,10 @@ export async function acceptImportCandidate(index:number,choice:ImportChoice) {
   if(!row)return
   const old=row.status==='saved'?row.chosen?.track.id:undefined
   const usedElsewhere=job.rows.some((other,i)=>i!==index&&other.status==='saved'&&other.chosen?.track.id===old)
-  await commitImportTracks(job.scope,job.playlistId,job.name,[{track:choice.track,metadata:{title:row.song.title,artist:row.song.artists.join(' / ')||undefined,album:row.song.album,coverUrl:row.song.coverUrl||choice.track.coverUrl},replaceTrackId:usedElsewhere?undefined:old}])
+  await commitImportTracks(job.scope,job.playlistId,job.name,[{track:choice.track,metadata:{title:row.song.title,artist:row.song.artists.join(' / ')||undefined,album:row.song.album,coverUrl:row.song.coverUrl||choice.track.coverUrl},replaceTrackId:usedElsewhere?undefined:old,originalPosition:row.order??index}])
   if(usePlaylistImport.getState().scope!==job.scope||usePlaylistImport.getState().job?.id!==job.id)return
   row.chosen=choice;row.status='saved';row.message=undefined
   row.candidates=[]
   publish(job,true)
 }
-window.addEventListener('bilimusic-account-changing',()=>{pausePlaylistImport();usePlaylistImport.setState({job:null,scope:''})})
+window.addEventListener('bilimusic-account-changing',()=>{pausePlaylistImport();searchCache.clear();requestPolicy.reset();usePlaylistImport.setState({job:null,scope:''})})

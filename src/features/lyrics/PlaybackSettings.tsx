@@ -72,7 +72,7 @@ export function PlaybackSettings({ track, kind, onChanged }: {
         {missing && <option value={selected}>{audio ? '已记住偏好 · 本曲使用可用音质' : '已记住偏好 · 本片自动适配'}</option>}
       </select>
     </label>}
-    {(error || queryError) && <p role="alert">{error || commandErrorMessage(queryError)}</p>}
+    {(error || queryError) && <p role="alert">{error || commandErrorMessage(queryError)}{queryError && <button type="button" aria-label={`${audio ? '音质' : '画质'}加载失败，重新加载`} onClick={() => { void options.refetch(); void preferences.refetch() }}>重新加载</button>}</p>}
     {busy && <small role="status">{audio ? '正在准备新音质，继续播放当前音源…' : '正在切换…'}</small>}
   </div>
 }

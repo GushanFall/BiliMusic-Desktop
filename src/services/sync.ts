@@ -1,5 +1,6 @@
 import { startBackgroundSync } from './backgroundSync'
 import { accountEpoch } from './accountScope'
+import { syncErrorMessage } from './userErrors'
 import { reportSyncOutcome, reportSyncError } from './syncAttention'
 import { invoke } from '@tauri-apps/api/core'
 import { inDesktopShell, fromStoredTrack } from './desktopApi'
@@ -34,7 +35,29 @@ export async function refreshSyncedLibrary(client: QueryClient) {
 }
 export function startCloudSync(client: QueryClient) {
   if (!inDesktopShell) return () => undefined
-  return startBackgroundSync(client, async outcome => {
+  let refreshing = false
+  const manualRefresh = async () => {
+    if (refreshing) return
+    refreshing = true
+    const epoch = accountEpoch()
+    window.dispatchEvent(new CustomEvent('bilimusic-sync-status', {detail:'正在刷新…'}))
+    try {
+      await client.invalidateQueries({refetchType:'active'})
+      if (epoch !== accountEpoch()) return
+      const status=await syncStatus()
+      if(epoch!==accountEpoch())return
+      if (status.config.enabled) {
+        const result = await syncNow()
+        if (epoch !== accountEpoch()) return
+        if (result.changed) await refreshSyncedLibrary(client)
+        if (result.conflicts.length) {window.dispatchEvent(new CustomEvent('bilimusic-sync-status',{detail:'有同步差异，请到云同步中处理'}));return}
+      }
+      window.dispatchEvent(new CustomEvent('bilimusic-sync-status',{detail:'已刷新'}))
+    } catch (error) { if(epoch === accountEpoch()) window.dispatchEvent(new CustomEvent('bilimusic-sync-status',{detail:syncErrorMessage(error)})) }
+    finally {refreshing=false}
+  }
+  window.addEventListener('bilimusic-refresh-requested',manualRefresh)
+  const stop = startBackgroundSync(client, async outcome => {
     if (outcome.conflicts.length) {
       window.dispatchEvent(new CustomEvent('bilimusic-sync-status', { detail: '有同步冲突，请到设置中处理' }))
       return
@@ -46,6 +69,7 @@ export function startCloudSync(client: QueryClient) {
       if (loaded && epoch === accountEpoch()) await refreshSyncedLibrary(client)
     }
   })
+  return () => {stop();window.removeEventListener('bilimusic-refresh-requested',manualRefresh)}
 }
 
 export async function hydrateVisibleTracks(tracks: import('../domain/track').Track[] | undefined, client: QueryClient) {

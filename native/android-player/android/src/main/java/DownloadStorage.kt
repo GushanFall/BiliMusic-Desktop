@@ -21,7 +21,7 @@ internal class DownloadStorage(private val context: Context) {
         val uri = tree
         val available = if (uri == null) Build.VERSION.SDK_INT >= 29 else hasGrant(uri)
         return JSObject().put("label", if (uri == null) {
-            if (available) "下载 / BiliMusic" else "请选择保存文件夹"
+            if (available) "Download/BiliMusic" else "请选择保存文件夹"
         } else prefs.getString("label", "已选择的文件夹"))
             .put("available", available).put("custom", uri != null).put("canReset", Build.VERSION.SDK_INT >= 29)
     }

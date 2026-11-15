@@ -44,7 +44,8 @@ test('late sync metadata refresh cannot overwrite the next account player', asyn
       plugins:[{name:'player-boundary',setup(builder){
         builder.onResolve({filter:/playerStore$/},()=>({path:'player',namespace:'mock'}))
         builder.onResolve({filter:/desktopApi$/},()=>({path:'api',namespace:'mock'}))
-        builder.onLoad({filter:/.*/,namespace:'mock'},({path})=>({contents:path==='player' ? 'export const usePlayerStore={getState:()=>globalThis.accountRefreshTest}' : 'export const inDesktopShell=false; export const fromStoredTrack=t=>t;'}))
+        builder.onResolve({filter:/playlistImport$/},()=>({path:'import-job',namespace:'mock'}))
+        builder.onLoad({filter:/.*/,namespace:'mock'},({path})=>({contents:path==='player' ? 'export const usePlayerStore={getState:()=>globalThis.accountRefreshTest}' : path==='import-job' ? 'export const usePlaylistImport={getState:()=>({job:null})}' : 'export const inDesktopShell=false; export const fromStoredTrack=t=>t;'}))
       }}],
     })
     const module={exports:{}}

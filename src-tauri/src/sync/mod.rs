@@ -1,4 +1,5 @@
 mod source_titles;
+pub(crate) use source_titles::save as cache_source_titles;
 pub mod actor;
 pub mod background;
 mod cache;
@@ -16,13 +17,13 @@ pub mod protocol_v2;
 pub mod publication;
 mod recovery;
 mod scheduler;
+#[cfg(test)]
+mod simulation;
 pub mod statistics;
 mod statistics_v2;
 pub mod storage;
 #[cfg(test)]
 mod test_dav;
-#[cfg(test)]
-mod simulation;
 mod traffic;
 mod transport;
 pub mod upgrade_merge;
@@ -720,7 +721,9 @@ pub async fn sync_hydrate_sources(
     title_ids: Option<Vec<String>>,
 ) -> Result<usize, String> {
     let _gate = state.gate.lock().await;
-    if let Some(ids) = title_ids { return source_titles::hydrate(&database, &provider, ids).await; }
+    if let Some(ids) = title_ids {
+        return source_titles::hydrate(&database, &provider, ids).await;
+    }
     let videos: Vec<String> = {
         let c = database.0.lock().map_err(|_| "数据库正忙")?;
         let mut q=c.prepare("SELECT id,bvid FROM source_items WHERE source_title='' OR source_title='B站歌曲（待加载）' ORDER BY bvid LIMIT 5000").map_err(|e|e.to_string())?;

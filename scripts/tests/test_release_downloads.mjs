@@ -8,11 +8,11 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 const run = promisify(execFile)
 
-async function fixture(t, corrupt, harmony = false) {
+async function fixture(t, corrupt, harmony = false, large = false) {
   const root = await mkdtemp(join(tmpdir(), 'bilimusic-download-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const sha256 = createHash('sha256').update('package').digest('hex')
-  const platforms = ['mac', 'windows', 'android', 'ios', ...(harmony ? ['ohos'] : [])].map(id => ({ id, file: `${id}.bin`, size: 7, sha256, channels: ['github', 'gitee'].map(source => ({ id: source, url: `https://example.test/${source}/${id}` })) }))
+  const platforms = ['mac', 'windows', 'android', 'ios', ...(harmony ? ['ohos'] : []), ...(large ? ['android-large'] : [])].map(id => ({ id, file: `${id}.bin`, size: 7, sha256, channels: ['github', 'gitee'].map(source => ({ id: source, url: `https://example.test/${source}/${id}` })) }))
   const plan = join(root, 'plan.json'), report = join(root, 'report.json'), preload = join(root, 'fetch.mjs')
   await writeFile(plan, JSON.stringify({ manifest: { platforms } }))
   await writeFile(preload, `globalThis.fetch=async url=>{const response=new Response(${JSON.stringify(corrupt ? 'changed' : 'package')});Object.defineProperty(response,'url',{value:url});return response}`)
@@ -34,6 +34,14 @@ test('four-platform releases also verify both retained Harmony downloads', async
   const data = JSON.parse(await readFile(report, 'utf8'))
   assert.equal(data.results.length, 10)
   assert.equal(data.results.filter(r => r.platform === 'ohos').length, 2)
+})
+
+test('six packages verify twelve downloads including the separate large-screen edition', async t => {
+  const { plan, report, preload } = await fixture(t, false, true, true)
+  await run(process.execPath, ['--import', preload, resolve('scripts/verify_release_downloads.mjs'), plan, report, 'a'.repeat(64)])
+  const data = JSON.parse(await readFile(report, 'utf8'))
+  assert.equal(data.results.length, 12)
+  assert.equal(data.results.filter(r => r.platform === 'android-large').length, 2)
 })
 
 test('a same-size corrupted download prevents the activation proof', async t => {

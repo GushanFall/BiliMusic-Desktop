@@ -140,15 +140,20 @@ export function resetPlayerForAccount() {
 export function playbackClock() { if (isMobile) return mobilePlaybackClock(); return audio && loadedTrackId === usePlayerStore.getState().current?.id ? audio.currentTime : usePlayerStore.getState().progressSeconds }
 let persistTimer: ReturnType<typeof setTimeout> | undefined
 let pendingSnapshot: { key: string; value: string } | undefined
+let snapshotQueue: Track[] | undefined
+let snapshotCurrent: string | undefined
+let urgentSnapshot = false
 function flushPlayerSnapshot() {
   if (pendingSnapshot) { try { localStorage.setItem(pendingSnapshot.key, pendingSnapshot.value) } catch { /* Playback remains usable when storage is full. */ } pendingSnapshot = undefined }
 }
 const playerStorage = {
   getItem: (key: string) => localStorage.getItem(key),
-  setItem: (key: string, value: string) => { pendingSnapshot = { key, value }; if (!persistTimer) persistTimer = setTimeout(() => { persistTimer = undefined; flushPlayerSnapshot() }, 1000) },
+  setItem: (key: string, value: string) => { pendingSnapshot = { key, value }; if (urgentSnapshot) { urgentSnapshot = false; flushPlayerSnapshot(); return }; if (!persistTimer) persistTimer = setTimeout(() => { persistTimer = undefined; flushPlayerSnapshot() }, 1000) },
   removeItem: (key: string) => localStorage.removeItem(key),
 }
 window.addEventListener('pagehide', () => { flushPosition(); flushPlayerSnapshot() })
+window.addEventListener('blur', () => { flushPosition(); flushPlayerSnapshot() })
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.hidden) { flushPosition(); flushPlayerSnapshot() } })
 function bindAudioEvents(element:HTMLAudioElement) {
   const on = (event:string,handler:()=>void) => element.addEventListener(event,()=>{if(audio===element)handler()})
   let stallTimer: ReturnType<typeof setTimeout> | undefined
@@ -380,8 +385,11 @@ export const usePlayerStore = create<PlayerState>()(persist((set, get) => ({
       ...(retiredCurrent ? { progressSeconds: 0, durationSeconds: 0 } : {}),
     }
   },
-  partialize: ({ current, queue, queueSource, queueReversed, progressSeconds, durationSeconds, volume, shuffled, repeatMode, resumeThresholdSeconds }) =>
-    ({ current, queue, queueSource, queueReversed, progressSeconds, durationSeconds, volume, shuffled, repeatMode, resumeThresholdSeconds }),
+  partialize: ({ current, queue, queueSource, queueReversed, progressSeconds, durationSeconds, volume, shuffled, repeatMode, resumeThresholdSeconds }) => {
+    urgentSnapshot = queue !== snapshotQueue || current?.id !== snapshotCurrent
+    snapshotQueue = queue; snapshotCurrent = current?.id
+    return { current, queue, queueSource, queueReversed, progressSeconds, durationSeconds, volume, shuffled, repeatMode, resumeThresholdSeconds }
+  },
 }))
 
 function flushPosition(notify = false) {

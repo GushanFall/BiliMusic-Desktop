@@ -3,7 +3,7 @@
 //! The remote input must be a verified, conflict-free v2 projection for the supplied scope.
 use super::{
     causal::{self, Cell},
-    model::{text, Record, Snapshot},
+    model::{Record, Snapshot, text},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -820,10 +820,11 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(p
-            .conflicts()
-            .iter()
-            .any(|c| c.entity == key && c.field == "__record"));
+        assert!(
+            p.conflicts()
+                .iter()
+                .any(|c| c.entity == key && c.field == "__record")
+        );
     }
     #[test]
     fn automatic_metadata_join_keeps_cloud_ties_and_imports_one_sided_legacy_rows() {
@@ -882,10 +883,12 @@ mod tests {
                 Cell::Value(json!("old device edit"))
             )])
         );
-        assert!(plan(&anchor, Some(&anchor), &anchor, &remote)
-            .changes()
-            .unwrap()
-            .is_empty());
+        assert!(
+            plan(&anchor, Some(&anchor), &anchor, &remote)
+                .changes()
+                .unwrap()
+                .is_empty()
+        );
     }
     #[test]
     fn successful_v1_sync_after_bootstrap_is_not_mistaken_for_already_imported_data() {
@@ -948,26 +951,30 @@ mod tests {
         assert!(!fresh.ready());
         let mut another = scope();
         another.vault = "00000000-0000-4000-8000-000000000002".into();
-        assert!(prepare(
-            &another,
-            &anchor,
-            Some(&anchor),
-            &local,
-            &remote,
-            &BTreeSet::new(),
-            Some(&choices)
-        )
-        .is_err());
-        assert!(prepare(
-            &scope(),
-            &anchor,
-            Some(&anchor),
-            &local,
-            &remote,
-            &BTreeSet::new(),
-            Some(&choices)
-        )
-        .is_err());
+        assert!(
+            prepare(
+                &another,
+                &anchor,
+                Some(&anchor),
+                &local,
+                &remote,
+                &BTreeSet::new(),
+                Some(&choices)
+            )
+            .is_err()
+        );
+        assert!(
+            prepare(
+                &scope(),
+                &anchor,
+                Some(&anchor),
+                &local,
+                &remote,
+                &BTreeSet::new(),
+                Some(&choices)
+            )
+            .is_err()
+        );
     }
     #[test]
     fn delete_vs_edit_requires_a_choice_and_missing_baseline_does_not_infer_deletion() {
@@ -978,24 +985,28 @@ mod tests {
         let p = plan(&anchor, Some(&anchor), &absent, &remote);
         assert_eq!(p.conflicts()[0].reason, Reason::DeleteVsEdit);
         assert!(!p.ready());
-        assert!(plan(&anchor, None, &absent, &remote)
+        assert!(
+            plan(&anchor, None, &absent, &remote)
+                .changes()
+                .unwrap()
+                .is_empty()
+        );
+        let tombstones = BTreeSet::from([entity()]);
+        assert!(
+            prepare(
+                &scope(),
+                &anchor,
+                Some(&anchor),
+                &anchor,
+                &absent,
+                &tombstones,
+                None
+            )
+            .unwrap()
             .changes()
             .unwrap()
-            .is_empty());
-        let tombstones = BTreeSet::from([entity()]);
-        assert!(prepare(
-            &scope(),
-            &anchor,
-            Some(&anchor),
-            &anchor,
-            &absent,
-            &tombstones,
-            None
-        )
-        .unwrap()
-        .changes()
-        .unwrap()
-        .is_empty());
+            .is_empty()
+        );
         let mut local = anchor.clone();
         edit(&mut local, "name", json!("local edit"));
         let p = prepare(
@@ -1028,17 +1039,19 @@ mod tests {
             Cell::Value(json!(true))
         );
         // A creation not present at bootstrap may also collide with a later v2 tombstone.
-        assert!(!prepare(
-            &scope(),
-            &absent,
-            Some(&absent),
-            &local,
-            &absent,
-            &tombstones,
-            None
-        )
-        .unwrap()
-        .ready());
+        assert!(
+            !prepare(
+                &scope(),
+                &absent,
+                Some(&absent),
+                &local,
+                &absent,
+                &tombstones,
+                None
+            )
+            .unwrap()
+            .ready()
+        );
     }
     #[test]
     fn missing_and_null_are_different_conflict_candidates_and_wrong_account_is_rejected() {
@@ -1064,16 +1077,18 @@ mod tests {
         );
         let mut wrong = remote;
         wrong.uid = "43".into();
-        assert!(prepare(
-            &scope(),
-            &anchor,
-            Some(&anchor),
-            &local,
-            &wrong,
-            &BTreeSet::new(),
-            None
-        )
-        .is_err());
+        assert!(
+            prepare(
+                &scope(),
+                &anchor,
+                Some(&anchor),
+                &local,
+                &wrong,
+                &BTreeSet::new(),
+                None
+            )
+            .is_err()
+        );
     }
     #[test]
     fn upgrade_child_restore_also_requires_an_explicit_parent_choice() {

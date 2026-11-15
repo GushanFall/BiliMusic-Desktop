@@ -102,3 +102,16 @@ test('a bound side key cannot navigate away from an editor or modal while its cu
  const e=new Event('mousedown',{cancelable:true});Object.assign(e,mouseEvent(3));target.dispatchEvent(e)
  assert.equal(e.defaultPrevented,true);assert.deepEqual(actions,[]);stop()
 })
+
+test('refresh and sync has its own configurable shortcut and never becomes a player action',()=>{
+ const bindings=defaultShortcuts(true)
+ assert.equal(resolveShortcut({code:'F5',key:'F5',ctrlKey:false,metaKey:false,altKey:false,shiftKey:false},bindings),'refreshSync')
+ bindings.refreshSync={code:'KeyS',ctrl:false,meta:true,alt:false,shift:true}
+ assert.equal(resolveShortcut({code:'KeyS',key:'S',ctrlKey:false,metaKey:true,altKey:false,shiftKey:true},bindings),'refreshSync')
+})
+
+test('adding refresh shortcut preserves an existing user binding of F5',()=>{
+ const bindings=defaultShortcuts(true);delete bindings.refreshSync;bindings.toggle={code:'F5',ctrl:false,meta:false,alt:false,shift:false}
+ const restored=readShortcuts(JSON.stringify({version:1,bindings}),true,true)
+ assert.equal(restored.toggle.code,'F5');assert.equal(restored.refreshSync,null)
+})

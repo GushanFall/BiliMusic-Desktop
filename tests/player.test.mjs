@@ -384,3 +384,15 @@ test('an explicit seek while reading the local record wins over the automatic re
  const playing=store.getState().play(track('1'));await new Promise(setImmediate);store.getState().seek(42)
  pending.resolve(track('1'));await playing;assert.equal(audio[0].currentTime,42);listeners.pagehide()
 })
+
+test('queue replacement and reordering survive immediate termination without waiting for pagehide', async()=>{
+ const {store,storage,listeners}=setup()
+ const tracks=[track('801'),track('802'),track('803')]
+ await store.getState().playFromList(tracks,tracks[1].id,{kind:'video',title:'我的列表'})
+ let saved=JSON.parse(storage.get('resonance-player-v1')).state
+ assert.deepEqual(saved.queue.map(t=>t.id),tracks.map(t=>t.id));assert.equal(saved.current.id,'802');assert.equal(saved.queueSource.title,'我的列表')
+ store.getState().reverseQueue()
+ saved=JSON.parse(storage.get('resonance-player-v1')).state
+ assert.deepEqual(saved.queue.map(t=>t.id),['803','802','801'])
+ listeners.pagehide()
+})

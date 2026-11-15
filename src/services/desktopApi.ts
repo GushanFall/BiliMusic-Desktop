@@ -9,12 +9,12 @@ import { rankCatalogCandidates, rankLyricCandidates } from './musicMatchRanking'
 export type BiliSearchItem = { publishedAt?: number; bvid: string; title: string; uploaderName: string; uploaderId: number; coverUrl: string; durationSeconds: number; playCount: number; description: string }
 export type BiliSearchPage = { items: BiliSearchItem[]; page: number; pageSize: number; total: number }
 export type BiliVideoPart = { cid: number; page: number; title: string; durationSeconds: number; coverUrl: string; firstFrameUrl?: string }
-export type BiliVideoParts = { publishedAt?: number; season?: import('./mediaSources').SeasonSummary; bvid: string; aid: number; title: string; coverUrl: string; uploaderName: string; uploaderId: number; parts: BiliVideoPart[] }
+export type BiliVideoParts = { chapterContext?: boolean; publishedAt?: number; season?: import('./mediaSources').SeasonSummary; bvid: string; aid: number; title: string; coverUrl: string; uploaderName: string; uploaderId: number; parts: BiliVideoPart[] }
 export type PlaybackSource = { qualityId: number; audioUrl: string; backupUrls: string[]; mimeType: string; codecs: string; bandwidth: number }
 export type VideoSource = { videoUrl: string; mimeType: string; codecs: string; bandwidth: number }
 export type DanmakuItem = { timeSeconds: number; mode: number; fontSize: number; color: number; text: string }
 export type DesktopCommandError = { code: string; message: string; retryable: boolean }
-export type StoredTrack = { id: string; bvid: string; aid?: number; cid: number; page: number; title: string; artist?: string; album?: string; coverUrl?: string; durationSeconds: number; uploaderId?: number; uploaderName?: string; liked: boolean }
+export type StoredTrack = { id: string; bvid: string; aid?: number; cid: number; page: number; sourceDisplayTitle?:string; title: string; artist?: string; album?: string; coverUrl?: string; durationSeconds: number; uploaderId?: number; uploaderName?: string; liked: boolean }
 export type MetadataPatch = { title: string; artist?: string; album?: string; coverUrl?: string }
 export type LyricWord = { text: string; startTimeMs: number; endTimeMs: number }
 export type LyricLine = { words?: LyricWord[]; endTimeMs?: number; timeMs: number; text: string; translation?: string; romanization?: string }
@@ -26,7 +26,7 @@ export const FAVORITES_PLAYLIST_ID = 'system:favorites'
 export const FAVORITES_PLAYLIST: Playlist = { id: FAVORITES_PLAYLIST_ID, name: '我喜欢', description: '点击红心收藏的歌曲 · 默认歌单', trackCount: 0, isSystem: true }
 export type CatalogSource = 'auto' | 'netease' | 'qq' | 'itunes' | 'musicbrainz'
 export type CatalogCandidate = { trackId: string; trackName: string; artistName: string; collectionName?: string; artworkUrl?: string; source: string }
-export type DownloadRecord = { id: string; trackId: string; targetPath: string; status: 'queued' | 'downloading' | 'completed' | 'failed'; receivedBytes: number; totalBytes?: number; errorMessage?: string }
+export type DownloadRecord = { id: string; trackId: string; targetPath: string; status: 'queued' | 'downloading' | 'completed' | 'failed'; receivedBytes: number; totalBytes?: number; errorMessage?: string; track?: Track }
 export type QrLogin = { key: string; url: string }
 export type QrLoginStatus = { status: 'waiting' | 'confirmed' | 'authenticated' | 'expired' | 'error'; message: string }
 export type AccountProfile = { loggedIn: boolean; userId?: number; name?: string; avatarUrl?: string; level?: number; vipActive?: boolean }
@@ -205,7 +205,8 @@ export async function searchMetadataCatalog(title: string, artist: string, sourc
 }
 export async function listDownloads(): Promise<DownloadRecord[]> {
   if (!inDesktopShell) return []
-  return invoke<DownloadRecord[]>('downloads_list')
+  const records = await invoke<(Omit<DownloadRecord, 'track'> & { track?: StoredTrack })[]>('downloads_list')
+  return records.map(record => ({ ...record, track: record.track ? fromStoredTrack(record.track) : undefined }))
 }
 export const removeDownload = (downloadId: string) => invoke<void>('download_remove', { downloadId })
 export const downloadTrack = (track: Track, targetDirectory: string, skipExisting = false, audioId = 0, exportFormat: 'auto' | 'original' | 'flac' = 'auto') => invoke<boolean>('download_track', {
@@ -232,13 +233,13 @@ export const replyComment = (aid: number, message: string, root?: number, parent
 function toTrackInput(track: Track) {
   return {
     id: track.id, bvid: track.source.bvid, aid: track.source.aid, cid: track.source.cid, page: track.source.page,
-    sourceTitle: track.title, title: track.title, artist: track.artist, album: track.album, coverUrl: track.coverUrl,
+    sourceTitle: track.videoTitle || track.displayTitle || track.title, title: track.displayTitle || track.title, artist: track.artist, album: track.album, coverUrl: track.coverUrl,
     durationSeconds: track.durationSeconds, uploaderId: track.source.uploaderId, uploaderName: track.source.uploaderName,
   }
 }
 
 export function fromStoredTrack(track: StoredTrack): Track {
-  return { id: track.id, source: { provider: 'bilibili', bvid: track.bvid, aid: track.aid, cid: track.cid, page: track.page, uploaderId: track.uploaderId, uploaderName: track.uploaderName }, title: track.title, artist: track.artist, album: track.album, coverUrl: track.coverUrl?.replace(/^http:\/\//, 'https://'), durationSeconds: track.durationSeconds, liked: track.liked }
+  return { id: track.id, source: { provider: 'bilibili', bvid: track.bvid, aid: track.aid, cid: track.cid, page: track.page, uploaderId: track.uploaderId, uploaderName: track.uploaderName }, displayTitle: track.sourceDisplayTitle, title: track.title, artist: track.artist, album: track.album, coverUrl: track.coverUrl?.replace(/^http:\/\//, 'https://'), durationSeconds: track.durationSeconds, liked: track.liked }
 }
 
 export { commandErrorMessage } from './userErrors'

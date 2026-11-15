@@ -23,3 +23,10 @@ test('all platforms provide both declared download channels', () => {
     if(platform==='ohos') assert.ok(result.file.endsWith('-unsigned.hap'));
   }
 });
+
+test('large-screen edition resolves independently from the phone APK', () => {
+  const item = id => ({ id, status:'available', file:id+'.apk', sha256:'a'.repeat(64), channels:[{id:'github',url:'https://github.com/licpp/BiliMusic-Desktop/releases/download/v0.3.4/'+id+'.apk'}] });
+  const manifest={platforms:[item('android'),item('android-large')]};
+  assert.equal(resolveDownload({...request,platform:'android-large'},'current',manifest).file,'android-large.apk');
+  assert.equal(resolveDownload({...request,platform:'android'},'current',manifest).file,'android.apk');
+});

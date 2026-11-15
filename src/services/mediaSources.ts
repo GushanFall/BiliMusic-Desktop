@@ -31,6 +31,7 @@ export async function getSeason(mid: number, seasonId: number, refresh = false) 
 
 export function videoDetailFromTrack(track: Track, parts: BiliVideoPart[]): BiliVideoParts {
   return {
+    chapterContext: track.chapterContext,
     publishedAt: track.publishedAt,
     bvid: track.source.bvid, aid: track.source.aid || 0, title: track.videoTitle || track.title,
     coverUrl: track.coverUrl || '', uploaderId: track.source.uploaderId || 0, uploaderName: track.source.uploaderName || '',
@@ -42,6 +43,7 @@ export function seasonVideoRow(video: SeasonVideo, summary: SeasonSummary): Trac
   return {
     id: `bilibili:${video.bvid}:${video.cid}`,
     source: { provider: 'bilibili', bvid: video.bvid, aid: video.aid, cid: video.cid, page: 1, uploaderId: summary.uploaderId, uploaderName: summary.uploaderName },
+    chapterContext: true,
     title: video.title, videoTitle: video.title, coverUrl: video.coverUrl, durationSeconds: video.parts?.[0]?.durationSeconds ?? video.durationSeconds,
     publishedAt: video.publishedAt,
     liked: false, playCount: video.playCount, partCount: video.parts?.length, resolveParts: !video.parts?.length,

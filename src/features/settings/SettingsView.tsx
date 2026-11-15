@@ -1,3 +1,4 @@
+import { WindowCloseSettings } from './WindowCloseSettings'
 import { useSyncAttention } from '../../services/syncAttention'
 import { TriangleAlert } from 'lucide-react'
 import { ShortcutSettings } from './ShortcutSettings'
@@ -39,6 +40,7 @@ export function SettingsView({ embedded = false, onOpenDownloads }: { embedded?:
       <div className="settings-card"><div className="settings-icon"><Sun/></div><div><strong>主题</strong><small>选择你喜欢的明暗</small></div><div className="theme-options"><button className={theme === 'dark' ? 'selected' : ''} aria-pressed={theme === 'dark'} onClick={() => setTheme('dark')}>深色</button><button className={theme === 'light' ? 'selected' : ''} aria-pressed={theme === 'light'} onClick={() => setTheme('light')}>浅色</button></div></div>
     </div></section>
     <section className="settings-group" aria-labelledby="settings-playback"><h3 id="settings-playback">播放与歌词</h3><div className="settings-group-body">
+      <WindowCloseSettings/>
       <ResumeSettings/>
       {!isIOS && !isOHOS && <FloatingLyricsSettings/>}
       {!isMobile && <ShortcutSettings/>}

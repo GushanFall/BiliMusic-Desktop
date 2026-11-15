@@ -199,6 +199,7 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
 
     private var previousOrientation: Int? = null
     private var immersive = false
+    private var largeScreen = false
 
     private fun setVideoFullscreen(enabled: Boolean) {
         val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
@@ -206,7 +207,7 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
             previousOrientation = activity.requestedOrientation
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.systemBars())
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            if (!largeScreen) activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else if (!enabled) {
             val original = previousOrientation ?: return
             previousOrientation = null
@@ -325,6 +326,16 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
                 activity.startForegroundService(Intent(activity, PlaybackService::class.java)
                     .setAction("prepare").putExtra("id", args.id)
                     .putExtra("title", args.title).putExtra("artist", args.artist).putExtra("coverUrl", args.coverUrl))
+            } else if (args.action == "largeScreen") {
+                largeScreen = args.value > 0
+                if (largeScreen) activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else if (args.action == "keepAwake") {
+                if (args.value > 0) activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            } else if (args.action == "keyboard") {
+                val keyboard = activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                if (args.value <= 0) keyboard.hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+                else managedWebView?.let { view -> view.requestFocus(); keyboard.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT) }
             } else if (args.action == "videoFullscreen") {
                 setVideoFullscreen(args.value > 0)
             } else if (args.action == "immersive") {

@@ -1,4 +1,4 @@
-"""Validate a four-platform bundle before any publishing credentials are used."""
+"""Validate a multi-platform bundle before any publishing credentials are used."""
 import hashlib
 import json
 import plistlib
@@ -128,13 +128,14 @@ def verify_native(path, platform, version, certificate):
                     device = struct.unpack_from('<I', raw, offset + 8)[0] == 2
                 offset += size
             require(device, 'IPA is not an iOS device binary')
-    elif platform == 'Android':
+    elif platform in ('Android', 'Android Large Screen'):
         require(certificate == ANDROID_CERTIFICATE and apk_certificate(path) == certificate, 'Android signing certificate changed')
         with zipfile.ZipFile(path) as archive:
             require(archive.testzip() is None, 'Corrupt APK')
             manifest = apk_manifest(archive.read('AndroidManifest.xml'))
             major, minor, patch = map(int, version.split('.'))
-            require(manifest['package'] == 'app.bilimusic.mobile' and manifest['versionName'] == version and manifest['versionCode'] == major * 1000000 + minor * 10000 + patch * 100, 'Android identity/versionCode mismatch')
+            expected_id = 'app.bilimusic.large' if platform == 'Android Large Screen' else 'app.bilimusic.mobile'
+            require(manifest['package'] == expected_id and manifest['versionName'] == version and manifest['versionCode'] == major * 1000000 + minor * 10000 + patch * 100, 'Android identity/versionCode mismatch')
             libraries = [x for x in archive.infolist() if x.filename.endswith('.so')]
             require(libraries and all(x.filename.startswith('lib/arm64-v8a/') and x.file_size < 30 * 1024 * 1024 for x in libraries), 'Unexpected Android native libraries')
             dex = b''.join(archive.read(x.filename) for x in archive.infolist() if x.filename.endswith('.dex'))
@@ -173,7 +174,9 @@ def validate_bundle(bundle, native_verifier=verify_native):
     ids = {'macOS': 'mac', 'iOS': 'ios', 'Android': 'android', 'Windows': 'windows'}
     if any(p['platform'] == 'HarmonyOS NEXT' for p in build['platforms']):
         ids['HarmonyOS NEXT'] = 'ohos'
-    require(len(build['platforms']) == len(ids) and {p['platform'] for p in build['platforms']} == set(ids), 'Expected four or five distinct built platforms')
+    if any(p['platform'] == 'Android Large Screen' for p in build['platforms']):
+        ids['Android Large Screen'] = 'android-large'
+    require(len(build['platforms']) == len(ids) and {p['platform'] for p in build['platforms']} == set(ids), 'Expected distinct built platforms, including every declared edition')
     manifest_ids = [p['id'] for p in manifest['platforms']]
     require(len(manifest_ids) == len(set(manifest_ids)) and set(manifest_ids) in (set(ids.values()), set(ids.values()) | {'ohos'}), 'Expected four release platforms with optional retained Harmony test package')
     if 'ohos' in manifest_ids and 'HarmonyOS NEXT' not in ids:

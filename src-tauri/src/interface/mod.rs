@@ -7,3 +7,5 @@ pub mod playback_cache;
 pub mod playlist_import;
 
 pub mod list_preferences;
+
+mod playlist_sources;

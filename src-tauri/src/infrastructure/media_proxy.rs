@@ -176,6 +176,37 @@ impl MediaProxy {
             task.abort();
         }
     }
+    /// Reuse the normal range/cache path; never download an entire upcoming track.
+    pub async fn preload_start(&self, url: &str) -> Result<bool, String> {
+        let id = url.rsplit('/').next().ok_or("预加载地址无效")?;
+        let cached = self
+            .state
+            .entries
+            .read()
+            .await
+            .get(id)
+            .and_then(|entry| entry.cached.clone());
+        let Some(audio) = cached else {
+            return Ok(false);
+        };
+        let work = async {
+            audio
+                .block(&self.state, 0)
+                .await
+                .map_err(|_| "起播缓存暂不可用")?;
+            let total = audio.total.load(std::sync::atomic::Ordering::Relaxed);
+            if total > CHUNK_SIZE {
+                audio
+                    .block(&self.state, (total - 1) / CHUNK_SIZE)
+                    .await
+                    .map_err(|_| "音频索引缓存暂不可用")?;
+            }
+            Ok(true)
+        };
+        tokio::time::timeout(Duration::from_secs(6), work)
+            .await
+            .map_err(|_| "起播缓存预热超时".to_owned())?
+    }
     async fn local_url(&self, id: &str) -> String {
         let server = self.server.lock().await;
         format!("{}/{}/{}", server.base_url, self.state.access_token, id)
@@ -1371,6 +1402,104 @@ mod tests {
             );
             assert!(result.status.success());
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn preloading_is_bounded_and_removes_startup_network_requests() {
+        use super::{CHUNK_SIZE, PlaybackCache};
+        use axum::{
+            Router,
+            body::Body,
+            http::{HeaderMap, Response},
+            routing::get,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let root =
+            std::env::temp_dir().join(format!("bilimusic-prefetch-{}", uuid::Uuid::new_v4()));
+        let cache =
+            Arc::new(PlaybackCache::open(root.join("media"), root.join("config.json")).unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let payload = Arc::new(vec![42u8; CHUNK_SIZE as usize * 10 + 23]);
+        let app = Router::new().route(
+            "/audio",
+            get({
+                let hits = hits.clone();
+                let bytes = bytes.clone();
+                let payload = payload.clone();
+                move |headers: HeaderMap| {
+                    let hits = hits.clone();
+                    let bytes = bytes.clone();
+                    let payload = payload.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        let (start, end) = super::byte_range(
+                            headers.get("range").and_then(|h| h.to_str().ok()),
+                            payload.len() as u64,
+                        )
+                        .unwrap();
+                        bytes.fetch_add((end - start + 1) as usize, Ordering::SeqCst);
+                        Response::builder()
+                            .status(206)
+                            .header(
+                                "content-range",
+                                format!("bytes {start}-{end}/{}", payload.len()),
+                            )
+                            .header("content-type", "audio/mp4")
+                            .body(Body::from(payload[start as usize..=end as usize].to_vec()))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let proxy = MediaProxy::start_inner(Some(cache.clone()), None)
+            .await
+            .unwrap();
+        let source = crate::infrastructure::providers::bilibili::PlaybackSource {
+            quality_id: 30280,
+            audio_url: format!("http://{address}/audio"),
+            backup_urls: vec![],
+            mime_type: "audio/mp4".into(),
+            codecs: "mp4a.40.2".into(),
+            bandwidth: 128000,
+        };
+        let url = proxy
+            .register_audio("prefetch:1", "BVtest", 1, 0, source.clone())
+            .await;
+        assert!(proxy.preload_start(&url).await.unwrap());
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert!(bytes.load(Ordering::SeqCst) <= 2 * CHUNK_SIZE as usize);
+        assert!(proxy.preload_start(&url).await.unwrap());
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        let response = reqwest::Client::new()
+            .get(&url)
+            .header("range", "bytes=0-31")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.bytes().await.unwrap().as_ref(), &payload[..32]);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "starting the next track must use the prefetched prefix"
+        );
+        let uncached = MediaProxy::start_inner(None, None).await.unwrap();
+        let url = uncached
+            .register_audio("uncached:1", "BVtest", 1, 0, source)
+            .await;
+        assert!(!uncached.preload_start(&url).await.unwrap());
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        drop(proxy);
+        drop(uncached);
+        drop(cache);
+        upstream.abort();
         std::fs::remove_dir_all(root).unwrap();
     }
 

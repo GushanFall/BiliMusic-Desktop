@@ -1,7 +1,7 @@
 //! One transactional entry point for fresh, account and guest databases.
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 
 pub fn migrate(c: &Connection) -> rusqlite::Result<()> {
     let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -15,8 +15,18 @@ pub fn migrate(c: &Connection) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
     let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let has_log: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",[],|r|r.get(0))?;
-    let newest: i64 = if has_log { c.query_row("SELECT COALESCE(MAX(version),0) FROM schema_migrations",[],|r|r.get(0))? } else { 0 };
-    if version > VERSION || newest > VERSION { return Err(rusqlite::Error::InvalidQuery); }
+    let newest: i64 = if has_log {
+        c.query_row(
+            "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )?
+    } else {
+        0
+    };
+    if version > VERSION || newest > VERSION {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
 
     if version < 2 {
         // Historical releases all reported version 1, including schema variants.
@@ -36,9 +46,19 @@ pub fn migrate(c: &Connection) -> rusqlite::Result<()> {
     }
     if version < 4 {
         let has_created: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('collection_folders') WHERE name='created_at')",[],|r|r.get(0))?;
-        if !has_created { c.execute_batch("ALTER TABLE collection_folders ADD COLUMN created_at TEXT;")?; }
+        if !has_created {
+            c.execute_batch("ALTER TABLE collection_folders ADD COLUMN created_at TEXT;")?;
+        }
         c.execute_batch(include_str!("../../migrations/0004_sync_runtime.sql"))?;
-        c.execute_batch("INSERT OR IGNORE INTO schema_migrations(version) VALUES(4); PRAGMA user_version=4;")?;
+        c.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES(4); PRAGMA user_version=4;",
+        )?;
+    }
+    if version < 5 {
+        c.execute_batch(include_str!("../../migrations/0005_import_archive.sql"))?;
+        c.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES(5); PRAGMA user_version=5;",
+        )?;
     }
     tx.commit()
 }
@@ -64,42 +84,99 @@ mod tests {
                 c.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                     .get::<_, i64>(0))
                     .unwrap(),
-                3
+                4
             );
             c.prepare("SELECT scope FROM collection_folders").unwrap();
         }
     }
     #[test]
     fn legacy_reopen_version_marker_does_not_replay_non_idempotent_steps() {
-        let c=Connection::open_in_memory().unwrap();
+        let c = Connection::open_in_memory().unwrap();
         migrate(&c).unwrap();
         c.execute("INSERT INTO collection_folders(id,name,scope) VALUES('keep','保留我的资料','collections')",[]).unwrap();
-        let before:String=c.query_row("SELECT created_at FROM collection_folders WHERE id='keep'",[],|r|r.get(0)).unwrap();
+        let before: String = c
+            .query_row(
+                "SELECT created_at FROM collection_folders WHERE id='keep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         // Existing 0.3.2 structure/log, but a historical executable restored marker 1.
         c.execute_batch("PRAGMA user_version=1").unwrap();
-        migrate(&c).unwrap();migrate(&c).unwrap();
-        assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),VERSION);
-        assert_eq!(c.query_row("SELECT name,created_at FROM collection_folders WHERE id='keep'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).unwrap(),("保留我的资料".into(),before));
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM schema_migrations",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+        migrate(&c).unwrap();
+        migrate(&c).unwrap();
+        assert_eq!(
+            c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            VERSION
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT name,created_at FROM collection_folders WHERE id='keep'",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            )
+            .unwrap(),
+            ("保留我的资料".into(), before)
+        );
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
     }
     #[test]
     fn newer_migration_log_is_rejected_even_if_legacy_marker_was_reset() {
-        let c=Connection::open_in_memory().unwrap();migrate(&c).unwrap();
-        c.execute_batch("INSERT INTO schema_migrations(version) VALUES(7); PRAGMA user_version=1;").unwrap();
+        let c = Connection::open_in_memory().unwrap();
+        migrate(&c).unwrap();
+        c.execute_batch("INSERT INTO schema_migrations(version) VALUES(7); PRAGMA user_version=1;")
+            .unwrap();
         assert!(migrate(&c).is_err());
-        assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(
+            c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
     #[test]
     #[ignore = "requires an explicitly supplied disposable database copy"]
     fn disposable_database_copy_preserves_user_rows_after_upgrade() {
-        let path=std::env::var("BILIMUSIC_MIGRATION_FIXTURE_FILE").expect("supply a disposable copy, never the live database");
-        let c=Connection::open(path).unwrap();
-        let tables=["tracks","playlists","playlist_items","play_history","listening_buckets"];
-        let counts=||tables.iter().map(|table|c.query_row(&format!("SELECT COUNT(*) FROM {table}"),[],|r|r.get::<_,i64>(0)).unwrap()).collect::<Vec<_>>();
-        let before=counts();migrate(&c).unwrap();migrate(&c).unwrap();
-        assert_eq!(counts(),before);
-        assert_eq!(c.query_row("PRAGMA quick_check",[],|r|r.get::<_,String>(0)).unwrap(),"ok");
-        assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),VERSION);
+        let path = std::env::var("BILIMUSIC_MIGRATION_FIXTURE_FILE")
+            .expect("supply a disposable copy, never the live database");
+        let c = Connection::open(path).unwrap();
+        let tables = [
+            "tracks",
+            "playlists",
+            "playlist_items",
+            "play_history",
+            "listening_buckets",
+        ];
+        let counts = || {
+            tables
+                .iter()
+                .map(|table| {
+                    c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = counts();
+        migrate(&c).unwrap();
+        migrate(&c).unwrap();
+        assert_eq!(counts(), before);
+        assert_eq!(
+            c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(
+            c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            VERSION
+        );
     }
     #[test]
     fn newer_database_is_rejected_without_changes() {

@@ -1,3 +1,4 @@
+import { usePlaylistImport } from './playlistImport'
 import { invoke } from '@tauri-apps/api/core'
 import type { QueryClient } from '@tanstack/react-query'
 import type { SyncOutcome } from './sync'
@@ -14,7 +15,7 @@ export function startBackgroundSync(client: QueryClient, onLibrary: (outcome: Sy
     if (stopped || switching || document.hidden) return
     const epoch = accountEpoch()
     try {
-      const report = await invoke<Report>('sync_background', { hint })
+      const report = await invoke<Report>('sync_background', { hint, bulkImport: ['matching','saving','waiting'].includes(usePlaylistImport.getState().job?.state || '') })
       if (stopped || switching || epoch !== accountEpoch()) return
       if (report.statistics || report.statisticsError) await client.invalidateQueries({ queryKey: ['listening-statistics'] })
       if (stopped || switching || epoch !== accountEpoch()) return

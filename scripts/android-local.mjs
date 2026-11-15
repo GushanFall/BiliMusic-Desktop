@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const task = process.argv[2] ?? 'doctor'
-if (!['doctor', 'init', 'build', 'test', 'dev'].includes(task)) throw new Error('Use: npm run android:local -- doctor|init|build|test|dev [arguments]')
+if (!['doctor', 'init', 'build', 'test', 'dev', 'large-screen'].includes(task)) throw new Error('Use: npm run android:local -- doctor|init|build|test|dev|large-screen [arguments]')
 const extras = process.argv.slice(3)
 const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || join(homedir(), 'Library/Android/sdk')
 const jdkRoot = join(homedir(), 'Library/Java/JavaVirtualMachines')
@@ -52,9 +52,12 @@ if (task === 'doctor') {
   run(join(java, 'bin/java'), ['-version'])
   run(join(sdk, 'platform-tools/adb'), ['version'])
   console.log('Android local build environment is ready.')
+} else if (task === 'large-screen') {
+  run('node', ['scripts/android-large-screen.mjs', ...extras])
 } else {
   const generated = join(root, 'src-tauri/gen/android')
   if (task === 'init' || !existsSync(join(generated, 'gradlew'))) run('npm', ['run', 'android:init'])
+  else if (task === 'build' || task === 'dev') run('node', ['scripts/android-prepare.mjs'])
   if (task === 'build') run('npm', ['run', 'tauri', '--', 'android', 'build', '--apk', '--target', 'aarch64', ...extras])
   if (task === 'dev') run('npm', ['run', 'tauri', '--', 'android', 'dev', ...extras])
   if (task === 'test') run(join(generated, 'gradlew'), [':tauri-plugin-android-player:testReleaseUnitTest', '--no-daemon', ...extras], generated)

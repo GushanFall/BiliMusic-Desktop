@@ -107,7 +107,7 @@ export function CollectionsView({ hideHeading = false, sidebar = false, folderId
     {folders.filter(item => matches(item.name)).map(folder => {
       const contents = items.filter(item => item.folderId === folder.id)
       const onOpen = () => onOpenFolder(folder.id)
-      return <LibraryEntry key={folder.id} title={folder.name} subtitle={`${contents.length} 个收藏`} sidebar={sidebar}
+      return <LibraryEntry coverBadge="folder" key={folder.id} title={folder.name} subtitle={`${contents.length} 个收藏`} sidebar={sidebar}
         cover={<Artwork src={contents[0]?.coverUrl} adaptAspect fallback={<Folder aria-hidden="true"/>}/>}
         dropFolderId={folder.id} onOpen={onOpen}
         menu={position => <FolderMenu folder={folder} contextPosition={position} onOpen={onOpen}
@@ -138,7 +138,7 @@ export function CollectionsView({ hideHeading = false, sidebar = false, folderId
       <button type="button" className="collections-collapse" aria-expanded={expanded} onClick={toggle}>
         <span>收藏</span>{expanded ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
       </button>
-      {expanded && <div className="collections-heading-actions sidebar-heading-actions">{organizer.controls}{!organizer.editing && <FolderEditor action="create" onDone={refresh}/>}</div>}
+      {expanded && <div className="collections-heading-actions sidebar-heading-actions">{organizer.controls}{!organizer.editing && <FolderEditor iconOnly action="create" onDone={refresh}/>}</div>}
     </div>
     {expanded && (organizer.editing ? organizer.editor : entries)}
     {moveError}
@@ -150,7 +150,7 @@ export function CollectionsView({ hideHeading = false, sidebar = false, folderId
       <div className="collections-heading-actions hub-toolbar-actions">
         <button type="button" className="collection-icon" aria-label="搜索收藏合集" aria-expanded={searchOpen} onClick={() => { setSearchOpen(!searchOpen); setFilter('') }}><Search size={18}/></button>
         {!root&&folder&&<ListSort entity={`collectionFolder:${folder.id}`}/>}
-        {root ? <><FolderEditor action="create" onDone={refresh}/>{organizer.controls}</> : folder && <FolderMenu folder={folder} onChanged={refresh} onRemoved={() => onFolderRemoved?.(folder.id)} />}
+        {root ? <><FolderEditor iconOnly action="create" onDone={refresh}/>{organizer.controls}</> : folder && <FolderMenu folder={folder} onChanged={refresh} onRemoved={() => onFolderRemoved?.(folder.id)} />}
       </div>
     </div>
     {searchOpen && <label className="collections-search detail-search"><Search size={16}/>

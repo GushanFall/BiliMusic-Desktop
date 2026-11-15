@@ -338,3 +338,5 @@
  :root[data-layout="mobile"] .listening-library :is(.listening-tools,.collections-tools-only) .collection-icon { width:36px;height:36px;color:var(--ink);border:0;background:transparent; }
  :root[data-layout="mobile"] .listening-library .creators-view { padding:0; }
 }
+
+.folder-editor-dialog{width:min(440px,calc(100vw - 32px))}.folder-editor-form{display:grid;gap:8px}.folder-name-field{display:grid;gap:10px;font-size:13px;color:var(--muted)}.folder-editor-form .folder-name-field input{min-height:46px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:color-mix(in srgb,var(--muted) 5%,var(--panel));color:var(--ink);font:inherit;font-size:14px;transition:border-color 140ms}.folder-editor-form .folder-name-field input:focus{outline:2px solid color-mix(in srgb,var(--cyan) 18%,transparent);outline-offset:1px;border-color:var(--cyan)}.folder-editor-form footer{gap:10px}.folder-editor-form footer button{min-height:40px;padding:9px 16px;border-radius:10px}

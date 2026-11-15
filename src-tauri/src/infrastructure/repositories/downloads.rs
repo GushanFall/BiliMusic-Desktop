@@ -1,3 +1,4 @@
+use super::library::{LibraryRepository, TrackRecord};
 use crate::interface::error::CommandError;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -12,11 +13,66 @@ pub struct DownloadRecord {
     pub received_bytes: i64,
     pub total_bytes: Option<i64>,
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<TrackRecord>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloaded_tracks_resolve_even_outside_the_library_preview() {
+        use super::super::library::TrackInput;
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::infrastructure::migrations::migrate(&connection).unwrap();
+        for cid in 1..=501 {
+            LibraryRepository::upsert(
+                &mut connection,
+                &TrackInput {
+                    id: format!("bilibili:BVTEST00001:{cid}"),
+                    bvid: "BVTEST00001".into(),
+                    aid: None,
+                    cid,
+                    page: 1,
+                    source_title: "视频标题".into(),
+                    title: format!("歌曲 {cid}"),
+                    artist: Some("歌手".into()),
+                    album: None,
+                    cover_url: Some("https://example.test/cover.jpg".into()),
+                    duration_seconds: 120,
+                    uploader_id: None,
+                    uploader_name: None,
+                },
+            )
+            .unwrap();
+        }
+        let id = "bilibili:BVTEST00001:1";
+        connection
+            .execute(
+                "UPDATE tracks SET updated_at='2000-01-01' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        assert!(
+            LibraryRepository::list(&connection, false, 500)
+                .unwrap()
+                .iter()
+                .all(|t| t.id != id)
+        );
+        DownloadRepository::create(&connection, "download", id, "/tmp/song.m4a").unwrap();
+        DownloadRepository::complete(&connection, "download", 123).unwrap();
+        let records = DownloadRepository::list_with_tracks(&connection).unwrap();
+        let record = records.iter().find(|r| r.id == "download").unwrap();
+        let track = record.track.as_ref().unwrap();
+        assert_eq!(track.title, "歌曲 1");
+        assert_eq!(track.artist.as_deref(), Some("歌手"));
+        assert_eq!(
+            track.cover_url.as_deref(),
+            Some("https://example.test/cover.jpg")
+        );
+        assert_eq!(record.status, "completed");
+    }
 
     #[test]
     fn records_progress_and_completion() {
@@ -58,6 +114,14 @@ mod tests {
 pub struct DownloadRepository;
 
 impl DownloadRepository {
+    // Resolve by download identity, not the 500 most recently updated library tracks.
+    pub fn list_with_tracks(connection: &Connection) -> rusqlite::Result<Vec<DownloadRecord>> {
+        let mut records = Self::list(connection)?;
+        for record in &mut records {
+            record.track = LibraryRepository::get(connection, &record.track_id)?;
+        }
+        Ok(records)
+    }
     pub fn create(
         connection: &Connection,
         id: &str,
@@ -146,6 +210,7 @@ impl DownloadRepository {
                     received_bytes: row.get(4)?,
                     total_bytes: row.get(5)?,
                     error_message: row.get(6)?,
+                    track: None,
                 })
             })?
             .collect()

@@ -35,6 +35,7 @@ pub struct TrackRecord {
     pub uploader_id: Option<i64>,
     pub uploader_name: Option<String>,
     pub liked: bool,
+    pub source_display_title: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,7 +218,7 @@ impl LibraryRepository {
         "SELECT t.id, s.bvid, s.aid, s.cid, s.page,
            COALESCE(NULLIF(m.title,''),t.title), COALESCE(m.artist,t.artist), COALESCE(m.album,t.album),
            COALESCE(m.cover_url,t.cover_url), t.duration_seconds, s.uploader_id, s.uploader_name,
-           CASE WHEN f.track_id IS NULL THEN 0 ELSE 1 END
+           CASE WHEN f.track_id IS NULL THEN 0 ELSE 1 END, t.title
          FROM tracks t JOIN source_items s ON s.id=t.source_item_id AND s.provider='bilibili'
          LEFT JOIN metadata_overrides m ON m.track_id=t.id LEFT JOIN favorites f ON f.track_id=t.id"
     }
@@ -237,6 +238,7 @@ impl LibraryRepository {
             uploader_id: row.get(10)?,
             uploader_name: row.get(11)?,
             liked: row.get(12)?,
+            source_display_title: row.get(13)?,
         })
     }
 }

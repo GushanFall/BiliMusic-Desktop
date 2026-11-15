@@ -55,6 +55,7 @@ pub struct Scheduler {
     slots: [Slot; 2],
     retry_at: [u64; 2],
     limited_until: u64,
+    bulk_checkpoint: Option<u64>,
 }
 fn index(d: Domain) -> usize {
     match d {
@@ -76,6 +77,21 @@ pub fn wall() -> u64 {
 }
 
 impl Scheduler {
+    /// Batch imports checkpoint locally immediately, and upload at most every
+    /// three minutes until completion. Explicit/manual sync is unaffected.
+    pub fn allow_bulk_library(&mut self, now: u64, active: bool) -> bool {
+        if !active {
+            self.bulk_checkpoint = None;
+            return true;
+        }
+        let last = self.bulk_checkpoint.get_or_insert(now);
+        if now.saturating_sub(*last) >= 180 * SECOND {
+            *last = now;
+            true
+        } else {
+            false
+        }
+    }
     pub fn scope(&self) -> &str {
         &self.scope
     }
@@ -211,6 +227,18 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bulk_import_coalesces_library_but_not_statistics_or_manual_sync() {
+        let mut s = Scheduler::default();
+        assert!(!s.allow_bulk_library(0, true));
+        assert!(!s.allow_bulk_library(179_999, true));
+        assert!(s.due(Domain::Statistics, 0));
+        assert!(s.manual_allowed(1));
+        assert!(s.allow_bulk_library(180_000, true));
+        assert!(!s.allow_bulk_library(180_001, true));
+        assert!(s.allow_bulk_library(181_000, false));
+        assert!(!s.allow_bulk_library(182_000, true));
+    }
     #[test]
     fn continuous_edits_have_a_deadline_and_inflight_edits_survive() {
         let mut s = Scheduler::default();

@@ -2,7 +2,7 @@ use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::bilibili::{BilibiliProvider, FavoriteFolder, FavoriteVideo};
 use crate::infrastructure::repositories::{auth::AuthRepository, playlists::PlaylistRecord};
 use crate::interface::error::CommandError;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use tauri::State;
 

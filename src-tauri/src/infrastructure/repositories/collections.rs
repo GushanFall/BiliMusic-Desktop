@@ -142,7 +142,9 @@ pub fn separate_legacy_folders(c: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 pub fn list(c: &Connection) -> rusqlite::Result<Collections> {
-    let mut q = c.prepare("SELECT id,name,scope FROM collection_folders ORDER BY created_at DESC,rowid DESC")?;
+    let mut q = c.prepare(
+        "SELECT id,name,scope FROM collection_folders ORDER BY created_at DESC,rowid DESC",
+    )?;
     let folders = q
         .query_map([], |r| {
             Ok(Folder {

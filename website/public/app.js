@@ -21,6 +21,7 @@ function platformIcon(platform) {
     mac: 'M4 3h16a1 1 0 0 1 1 1v12H3V4a1 1 0 0 1 1-1ZM8 21h8M12 16v5',
     windows: 'M3 3h7v7H3ZM14 3h7v7h-7ZM3 14h7v7H3ZM14 14h7v7h-7Z',
     android: 'M6 9a6 6 0 0 1 12 0ZM8 3 6 1M16 3l2-2M6 12h12v7H6ZM8 19v3M16 19v3M3 12v6M21 12v6',
+    'android-large': 'M3 4h18v13H3ZM8 21h8M12 17v4M16 8l4 3-4 3Z',
     ios: 'M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2ZM10 5h4M11 19h2',
     ohos: 'M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2ZM9 9h6M9 13h6M11 19h2',
   };

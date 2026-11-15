@@ -1,4 +1,4 @@
-"""Prepare a publishing bundle from verified four-platform build output."""
+"""Prepare a publishing bundle from verified multi-platform build output."""
 import argparse
 import copy
 import datetime
@@ -25,6 +25,8 @@ def prepare(build_dir, template, notes_path, output, revision, previous):
     ids = {'macOS': 'mac', 'iOS': 'ios', 'Android': 'android', 'Windows': 'windows'}
     if any(p['platform'] == 'HarmonyOS NEXT' for p in build['platforms']):
         ids['HarmonyOS NEXT'] = 'ohos'
+    if any(p['platform'] == 'Android Large Screen' for p in build['platforms']):
+        ids['Android Large Screen'] = 'android-large'
     for package in build['platforms']:
         path = build_dir / package['file']
         require(path.stat().st_size == package['bytes'] and digest(path) == package['sha256'], 'Build output changed: ' + path.name)

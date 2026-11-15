@@ -1,4 +1,6 @@
 import { isTauri } from '@tauri-apps/api/core'
+// Layout edition is independent from the native audio platform.
+export const isLargeScreen = import.meta.env?.VITE_BILIMUSIC_EDITION === 'large-screen'
 // OHOS ArkWeb may advertise an Android UA. The dedicated build sets this marker
 // before bundling the same frontend used by the other four platforms.
 export const isOHOS = isTauri() && import.meta.env?.VITE_BILIMUSIC_PLATFORM === 'ohos'

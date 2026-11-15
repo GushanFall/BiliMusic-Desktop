@@ -28,6 +28,7 @@ export async function startDownloadBatch(tracks: Track[], client: QueryClient, o
           try {
             const saved = await saveLibraryTrack(track)
             if (epoch !== accountEpoch()) break
+            void client.invalidateQueries({ queryKey: ['library'] })
             const request = downloadTrack(saved, directory, options.skipExisting ?? false, options.audioId, options.exportFormat)
             void client.invalidateQueries({ queryKey: ['downloads'] })
             if (await request) batch.completed++

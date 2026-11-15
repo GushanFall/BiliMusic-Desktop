@@ -124,7 +124,7 @@ function CreatorEntry({
       }
     : { ...item, title: item.title || `UP 主 ${item.bvid.slice(3)}` }
   const subtitle=[item.note?display.title:'',display.followers!==undefined?`${formatAudienceCount(display.followers)} 粉丝`:''].filter(Boolean).join(' · ')
-  return <LibraryEntry className="creator-entry" title={item.note||display.title} subtitle={subtitle||'UP 主'} sidebar={sidebar} coverClassName="creator-avatar-cover" cover={<Artwork src={display.coverUrl} fallback={<UserRound size={22}/>}/>} onOpen={()=>onOpen(display)} menu={position=><>{!sidebar&&!editable&&<CreatorFollow item={display}/>} {editable&&<CreatorActions item={item} folders={folders} contextPosition={position}/>}</>}/>
+  return <LibraryEntry className="creator-entry" title={item.note||display.title} subtitle={subtitle} sidebar={sidebar} coverClassName="creator-avatar-cover" cover={<Artwork src={display.coverUrl} fallback={<UserRound size={22}/>}/>} onOpen={()=>onOpen(display)} menu={position=><>{!sidebar&&!editable&&<CreatorFollow item={display}/>} {editable&&<CreatorActions item={item} folders={folders} contextPosition={position}/>}</>}/>
 }
 
 export function CreatorsView({
@@ -168,7 +168,7 @@ export function CreatorsView({
       {followed && root && <CreatorManager sidebar={sidebar} expanded={expanded} onToggle={()=>setExpanded(value=>{localStorage.setItem('creators-expanded',String(!value));return !value})} folders={folders} items={items}/>}
       {followed&&!root&&<div className="collections-heading"><h3>{folders.find(f=>f.id===selectedFolder)?.name||'关注文件夹'}</h3><div className="collections-heading-actions">{!folderId&&<button className="collection-icon" aria-label="返回关注" onClick={()=>setGroup('all')}><ArrowLeft size={18}/></button>}{folders.filter(f=>f.id===selectedFolder).map(folder=><FolderMenu key={folder.id} creator folder={folder} onChanged={()=>void saved.refetch()} onRemoved={()=>{setGroup('all');onFolderRemoved?.(folder.id)}}/>)}</div></div>}
       <div hidden={sidebar && !expanded}>
-      {followed&&root&&folders.map(folder=><LibraryEntry key={folder.id} title={folder.name} subtitle={`${items.filter(item=>item.folderId===folder.id).length} 位 UP 主`} sidebar={sidebar} cover={<Artwork fallback={<Folder aria-hidden="true"/>}/>} onOpen={()=>openFolder(folder.id)} menu={position=><FolderMenu creator folder={folder} contextPosition={position} onOpen={()=>openFolder(folder.id)} onChanged={()=>void saved.refetch()} onRemoved={()=>{if(selectedFolder===folder.id)setGroup('all');onFolderRemoved?.(folder.id)}}/>}/>)}
+      {followed&&root&&folders.map(folder=><LibraryEntry coverBadge="folder" key={folder.id} title={folder.name} subtitle={`${items.filter(item=>item.folderId===folder.id).length} 位 UP 主`} sidebar={sidebar} cover={<Artwork fallback={<Folder aria-hidden="true"/>}/>} onOpen={()=>openFolder(folder.id)} menu={position=><FolderMenu creator folder={folder} contextPosition={position} onOpen={()=>openFolder(folder.id)} onChanged={()=>void saved.refetch()} onRemoved={()=>{if(selectedFolder===folder.id)setGroup('all');onFolderRemoved?.(folder.id)}}/>}/>)}
       {(result.error || saved.error) && (
         <p role="alert">{commandErrorMessage(result.error || saved.error)}</p>
       )}

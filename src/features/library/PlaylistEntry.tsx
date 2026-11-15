@@ -104,8 +104,8 @@ export function PlaylistEntry({ playlist, sidebar = false, active = false, onOpe
   const cover = <Artwork src={playlist.coverUrl} adaptAspect className={playlist.isSystem?'favorites-playlist-artwork':undefined}
     fallback={playlist.isSystem?<Heart size={17} fill="currentColor"/>:playlist.biliFolderId?<Link2 aria-hidden="true"/>:<Album size={17}/>}
     imageOverlay={playlist.isSystem?<span className="favorites-heart-overlay" aria-hidden="true"><Heart fill="none" strokeWidth={2.2}/></span>:undefined}/>
-  const subtitle = `${playlist.trackCount}${playlist.biliFolderId ? ' 个视频 · B 站同步' : playlist.isSystem ? ' 首 · 默认歌单' : ' 首'}`
-  return <LibraryEntry title={playlist.name} titleAdornment={playlist.biliFolderId ? <Link2 size={13} className="playlist-link-mark" aria-label="与 B 站同步"/> : undefined} subtitle={subtitle} cover={cover} sidebar={sidebar} active={active} onOpen={onOpen}
+  const subtitle = `${playlist.trackCount}${playlist.biliFolderId ? ' 个视频' : ' 首'}`
+  return <LibraryEntry title={playlist.name} coverBadge={playlist.biliFolderId ? 'linked' : undefined} subtitle={subtitle} cover={cover} sidebar={sidebar} active={active} onOpen={onOpen}
     coverClassName={playlist.isSystem ? 'favorites-cover' : undefined}
     menu={position => <PlaylistMenu playlist={playlist} contextPosition={position} onOpen={onOpen} onRemoved={onRemoved}/>}/>
 }

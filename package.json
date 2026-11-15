@@ -1,7 +1,7 @@
 {
   "name": "bilimusic-desktop",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,7 @@
     "tauri": "tauri",
     "android:init": "tauri icon assets/android/icon.json --output src-tauri/.android-icons && tauri android init --ci --skip-targets-install && node scripts/android-prepare.mjs",
     "android:dev": "tauri android dev",
-    "android:build": "tauri android build --apk --target aarch64",
+    "android:build": "node scripts/android-prepare.mjs && tauri android build --apk --target aarch64",
     "android:local": "node scripts/android-local.mjs",
     "ios:init": "tauri icon public/app-icon.png --output src-tauri/.ios-icons && tauri ios init --ci --skip-targets-install && node scripts/ios-prepare.mjs",
     "ios:dev": "tauri ios dev",
@@ -22,7 +22,10 @@
     "ohos:prepare": "node scripts/ohos.mjs prepare",
     "ohos:check": "node scripts/ohos.mjs check",
     "ohos:init": "node scripts/ohos.mjs init",
-    "ohos:build": "node scripts/ohos.mjs build"
+    "ohos:build": "node scripts/ohos.mjs build",
+    "dev:large-screen": "vite --mode large-screen",
+    "build:large-screen": "tsc --noEmit && vite build --mode large-screen",
+    "android:large-screen": "node scripts/android-local.mjs large-screen"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.89.0",

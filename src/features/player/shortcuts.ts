@@ -1,17 +1,17 @@
 export const shortcutActions = [
   { id:'toggle', label:'播放 / 暂停' }, { id:'previous', label:'上一首' }, { id:'next', label:'下一首' },
   { id:'seekBack', label:'快退 10 秒' }, { id:'seekForward', label:'快进 10 秒' },
-  { id:'volumeUp', label:'增大音量' }, { id:'volumeDown', label:'减小音量' }, { id:'listSearch', label:'查找列表中的音乐' },
+  { id:'volumeUp', label:'增大音量' }, { id:'volumeDown', label:'减小音量' }, { id:'listSearch', label:'查找列表中的音乐' }, { id:'refreshSync', label:'刷新并同步' },
 ] as const
 export type ShortcutAction = typeof shortcutActions[number]['id']
-export type PlayerShortcut = Exclude<ShortcutAction, 'listSearch'>
+export type PlayerShortcut = Exclude<ShortcutAction, 'listSearch' | 'refreshSync'>
 export type Shortcut = { code:string; ctrl:boolean; meta:boolean; alt:boolean; shift:boolean }
 export type ShortcutBindings = Record<ShortcutAction, Shortcut | null>
 type KeyEvent = Pick<KeyboardEvent, 'code'|'key'|'metaKey'|'ctrlKey'|'altKey'|'shiftKey'> & Partial<Pick<KeyboardEvent,'isComposing'|'getModifierState'>>
 const allowedCode = /^(MouseBack|MouseForward|Key[A-Z]|Digit[0-9]|Numpad[0-9]|F(?:[1-9]|1[0-2])|Arrow(?:Up|Down|Left|Right)|Space|Enter|Backspace|Delete|Home|End|PageUp|PageDown|Insert|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|Backquote|Numpad(?:Add|Subtract|Multiply|Divide|Decimal|Enter))$/
 export function defaultShortcuts(mac = false): ShortcutBindings {
   const key = (code:string, command=false, alt=false): Shortcut => ({ code,ctrl:command&&!mac,meta:command&&mac,alt,shift:false })
-  return {toggle:key('Space'),previous:key('ArrowLeft',true),next:key('ArrowRight',true),seekBack:key('ArrowLeft',false,true),seekForward:key('ArrowRight',false,true),volumeUp:key('ArrowUp',true),volumeDown:key('ArrowDown',true),listSearch:key('KeyF',true)}
+  return {toggle:key('Space'),previous:key('ArrowLeft',true),next:key('ArrowRight',true),seekBack:key('ArrowLeft',false,true),seekForward:key('ArrowRight',false,true),volumeUp:key('ArrowUp',true),volumeDown:key('ArrowDown',true),listSearch:key('KeyF',true),refreshSync:key('F5')}
 }
 export function shortcutFromEvent(event: KeyEvent): Shortcut | undefined {
   if (event.isComposing || event.key === 'Process' || event.key === 'Dead' || event.getModifierState?.('AltGraph')) return
@@ -103,6 +103,7 @@ export function readShortcuts(raw: string | null, mac=false, desktop=false): Sho
         next[id]=desktop&&key.code==='KeyQ'&&key.ctrl&&key.alt&&!key.meta&&!key.shift?null:{code:key.code,ctrl:key.ctrl,meta:key.meta,alt:key.alt,shift:key.shift}
       }
     }
+    if(value.bindings.refreshSync===undefined && shortcutActions.some(({id})=>id!=='refreshSync'&&sameShortcut(next[id],next.refreshSync)))next.refreshSync=null
     // Reject corrupt or conflicting saved maps as a whole, so no action is silently shadowed.
     if(shortcutActions.some(({id})=>next[id] && shortcutProblem(next[id]!,next,id,desktop))) return defaults
     return next
@@ -112,5 +113,5 @@ export function readShortcuts(raw: string | null, mac=false, desktop=false): Sho
 export function playerShortcut(event: KeyEvent): PlayerShortcut | undefined {
   const bindings=defaultShortcuts(event.metaKey)
   const action=resolveShortcut(event,bindings)
-  return action==='listSearch'?undefined:action
+  return action==='listSearch'||action==='refreshSync'?undefined:action
 }

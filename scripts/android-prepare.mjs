@@ -1,8 +1,10 @@
 // Run after `tauri android init`. Keep generated Gradle scaffolding reproducible.
 import { readFile, writeFile, mkdir, cp } from 'node:fs/promises'
+import { editionManifest } from './android-manifest.mjs'
 const base = new URL('../src-tauri/gen/android/app/src/main/', import.meta.url)
 const manifest = new URL('AndroidManifest.xml', base)
 let xml = await readFile(manifest, 'utf8')
+xml = editionManifest(xml, process.argv.includes('--large-screen'))
 xml = xml.replace(/ android:networkSecurityConfig="[^"]*"/g, '')
 xml = xml.replace(/<application\b/, '<application android:networkSecurityConfig="@xml/bilimusic_network_security"')
 // Keep the current WebView and video when the app requests landscape.
@@ -28,3 +30,8 @@ await cp(new URL('../src-tauri/.android-icons/android/', import.meta.url), new U
 // Round launchers use the same safe foreground/background as other adaptive masks.
 const adaptive = await readFile(new URL('res/mipmap-anydpi-v26/ic_launcher.xml', base), 'utf8')
 await writeFile(new URL('res/mipmap-anydpi-v26/ic_launcher_round.xml', base), adaptive)
+
+if (process.argv.includes('--large-screen')) {
+  await mkdir(new URL('res/drawable/', base), { recursive: true })
+  await cp(new URL('../assets/android/tv_banner.png', import.meta.url), new URL('res/drawable/tv_banner.png', base))
+}

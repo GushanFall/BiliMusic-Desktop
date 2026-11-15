@@ -163,6 +163,7 @@ pub async fn sync_background(
     database: State<'_, Database>,
     state: State<'_, SyncState>,
     hint: Hint,
+    bulk_import: Option<bool>,
 ) -> Result<Report, String> {
     let cfg = config(&database)?;
     if cfg.uid.is_empty() || super::active(&database, &cfg.uid).is_err() {
@@ -175,7 +176,12 @@ pub async fn sync_background(
         .map_err(|_| "同步调度正忙")?
         .hint(hint, scheduler::now());
     let mut report = Report::default();
-    if cfg.enabled {
+    let allow_library = state
+        .scheduler
+        .lock()
+        .map_err(|_| "同步调度正忙")?
+        .allow_bulk_library(scheduler::now(), bulk_import.unwrap_or(false));
+    if cfg.enabled && allow_library {
         match super::sync_now(
             app.clone(),
             database.clone(),

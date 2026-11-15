@@ -35,3 +35,5 @@ __pycache__/
 /src-tauri/vendor/tao/.cargo_vcs_info.json
 /src-tauri/vendor/tao/Cargo.toml.orig
 /src-tauri/vendor/tao/Cargo.lock
+
+/dist-large-screen/

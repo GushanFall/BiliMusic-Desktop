@@ -52,3 +52,10 @@ test('QQ original aliases never discard orchestral and instrumental version requ
  assert.equal(chooseImportMatch({...song,title:'千秋 (Orch)',aliases:['千秋']},[choice(1,'周杰伦《千秋》')]),undefined)
  assert.equal(chooseImportMatch({...song,title:'River Flows',artists:['Artist']},[choice(1,'Artist - River Flows (Orch)')]),undefined)
 })
+
+test('分享文字自动识别五个平台，拒绝伪造后缀域名',async()=>{
+ const {outputFiles}=await build({entryPoints:['src/services/playlistImportModel.ts'],bundle:true,write:false,format:'esm',platform:'node'})
+ const {playlistLinkPlatform}=await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`)
+ for(const [url,name] of [['https://m.kugou.com/songlist/gcid_a/','酷狗音乐'],['https://www.kuwo.cn/playlist_detail/1','酷我音乐'],['https://h5.nf.migu.cn/app/v4/p/share/playlist/index.html?id=1','咪咕音乐'],['https://music.163.com/#/playlist?id=1','网易云音乐'],['https://y.qq.com/n/ryqq/playlist/1','QQ 音乐']])assert.equal(playlistLinkPlatform('分享给你 '+url),name)
+ assert.equal(playlistLinkPlatform('https://m.kugou.com.evil.test/playlist/1'),undefined)
+})

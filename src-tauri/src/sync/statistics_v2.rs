@@ -691,15 +691,20 @@ mod tests {
     async fn fresh_nutstore_account_statistics_initialize_before_the_library() {
         let (cfg, secret, store, server) = super::super::test_dav::server().await;
         store.lock().unwrap().dirs.retain(|d| d == "/dav/");
-        let a = device(&cfg); let b = device(&cfg);
+        let a = device(&cfg);
+        let b = device(&cfg);
         add(&a, &cfg, 45.5);
         exchange(&a, &cfg, &secret).await.unwrap();
         exchange(&b, &cfg, &secret).await.unwrap();
         assert_eq!(total(&b, &cfg), 45.5);
-        super::super::engine::sync(&b, &cfg, &secret, None, false).await.unwrap();
+        super::super::engine::sync(&b, &cfg, &secret, None, false)
+            .await
+            .unwrap();
         exchange(&a, &cfg, &secret).await.unwrap();
         assert_eq!(total(&a, &cfg), 45.5);
-        for d in [a,b] { std::fs::remove_dir_all(d.1).unwrap(); }
+        for d in [a, b] {
+            std::fs::remove_dir_all(d.1).unwrap();
+        }
         server.abort();
     }
     #[tokio::test]

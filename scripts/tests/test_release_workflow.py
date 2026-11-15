@@ -191,6 +191,32 @@ class ReleaseWorkflowTests(unittest.TestCase):
             publisher.api = Mock(side_effect=[{'conclusion': 'success', 'head_sha': source}, {'conclusion': 'success', 'head_sha': prior}])
             publisher.check_ci()
 
+    def test_six_platform_bundle_includes_a_separate_large_screen_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, version = 'a' * 40, '0.3.4'
+            ids = {'macOS': 'mac', 'iOS': 'ios', 'Android': 'android', 'Windows': 'windows', 'HarmonyOS NEXT': 'ohos', 'Android Large Screen': 'android-large'}
+            packages, entries = [], []
+            for platform, id in ids.items():
+                name = f'BiliMusic_{version}_{id}.bin'
+                data = platform.encode()
+                (root / name).write_bytes(data)
+                packages.append({'platform': platform, 'file': name, 'source': source, 'version': version, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
+                entries.append({'id': id, 'channels': [{'id': 'github'}, {'id': 'gitee'}]})
+                (root / ('THIRD_PARTY_LICENSES-' + platform.replace(' ', '-') + '.json')).write_text(json.dumps({'sourceCommit': source, 'version': version}))
+            (root / 'build-info.json').write_text(json.dumps({'version': version, 'source': source, 'platforms': packages, 'validation': {}}))
+            for name in ['THIRD_PARTY_NOTICES.md', 'qrc-codec-MIT.txt', 'notes.md']:
+                (root / name).write_text('# BiliMusic 0.3.4')
+            output = prepare(root, {'version': version, 'platforms': entries, 'history': [{'version': version}]}, root / 'notes.md', root / 'publish', 'stable', {'version': '0.3.3'})
+            verifier = Mock()
+            plan = validate_bundle(output, verifier)
+            self.assertEqual(len([a for a in plan['assets'] if a['binary']]), 6)
+            self.assertEqual(sum(len(p['channels']) for p in plan['manifest']['platforms']), 12)
+            self.assertIn('Android Large Screen', plan['platformSources'])
+            self.assertEqual(verifier.call_count, 6)
+            self.assertEqual(len({p['file'] for p in plan['manifest']['platforms']}), 6)
+            self.assertTrue((output / 'THIRD_PARTY_LICENSES-Android-Large-Screen.json').exists())
+
     def test_new_release_is_a_prerelease_until_packages_are_verified(self):
         with tempfile.TemporaryDirectory() as directory:
             source = 'a' * 40

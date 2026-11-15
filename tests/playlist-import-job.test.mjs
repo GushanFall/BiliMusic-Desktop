@@ -3,20 +3,23 @@ import assert from 'node:assert/strict'
 import {build} from 'esbuild'
 
 globalThis.window=new EventTarget()
-globalThis.__importTest={epoch:0,commits:[],search:async()=>[],details:async()=>null,scope:'profile-A'}
+globalThis.__importTest={epoch:0,commits:[],search:async()=>[],details:async()=>null,scope:'profile-A',archives:new Map()}
 const {outputFiles}=await build({entryPoints:['src/services/playlistImport.ts'],bundle:true,write:false,format:'esm',platform:'node',plugins:[{
   name:'isolated-import-adapters',setup(build){
     build.onResolve({filter:/desktopApi$|accountScope$|^@tauri-apps\/api\/core$/},args=>({path:args.path,namespace:'import-test'}))
     build.onLoad({filter:/.*/,namespace:'import-test'},args=>({contents:args.path.endsWith('desktopApi')?`
       export const inDesktopShell=true;
       export const commandErrorMessage=e=>e.message||String(e);
+      export const listPlaylistTracks=async()=>globalThis.__importTest.tracks||[];
       export const searchBilibili=async keyword=>({items:await globalThis.__importTest.search(keyword)});
       export const getVideoParts=bvid=>globalThis.__importTest.details(bvid);
     `:args.path.endsWith('accountScope')?`export const accountEpoch=()=>globalThis.__importTest.epoch;`:`
       export const invoke=async(command,args)=>{
         const state=globalThis.__importTest;
         if(command==='playlist_import_scope')return state.scope;
+        if(command==='playlist_import_archive'){const key=state.scope+':'+args.playlistId;if(args.document){state.archives.set(key,args.document);return null}return state.archives.get(key)||null;}
         if(command==='playlist_import_commit'){
+          if(state.commitWait){state.commitStarted?.();await state.commitWait;}
           if(args.expectedScope!==state.scope)throw new Error('wrong profile');
           state.commits.push(args);return {id:args.playlistId,trackCount:state.commits.flatMap(x=>x.entries).length};
         }
@@ -30,8 +33,8 @@ const source={sourceId:'1',title:'晴天',artists:['周杰伦'],durationSeconds:
 const hit={bvid:'BV1GJ411x7h7',title:'周杰伦《晴天》',durationSeconds:269,uploaderName:'UP',description:''}
 const detail={...hit,aid:1,coverUrl:'',uploaderId:7,parts:[{cid:123,page:1,title:'晴天',durationSeconds:269,coverUrl:''}]}
 const reset=async()=>{
-  api.clearPlaylistImport();api.usePlaylistImport.setState({job:null,scope:''})
-  Object.assign(globalThis.__importTest,{epoch:0,commits:[],scope:'profile-A',search:async()=>[hit],details:async()=>detail})
+  api.clearPlaylistImport();window.dispatchEvent(new Event('bilimusic-account-changing'));api.usePlaylistImport.setState({job:null,scope:''})
+  Object.assign(globalThis.__importTest,{epoch:0,commits:[],scope:'profile-A',commitWait:undefined,commitStarted:undefined,tracks:[],search:async()=>[hit],details:async()=>detail})
   await api.bootPlaylistImport()
 }
 test('一键匹配与保存，无需人工确认，且保存真实CID与来源歌手',async()=>{
@@ -87,7 +90,7 @@ test('暂停续导从待处理项继续，不重新匹配已经保存的歌曲',
     if(calls===2){start();return new Promise(resolve=>{finish=resolve})}
     return Promise.resolve([hit])
   }
-  api.newPlaylistImport({source:'text',name:'歌单',songs:[source,{...source,sourceId:'2'}]},'歌单')
+  api.newPlaylistImport({source:'text',name:'歌单',songs:[source,{...source,sourceId:'2',title:'晴天！'}]},'歌单')
   const run=api.runPlaylistImport();await started
   assert.equal(api.usePlaylistImport.getState().job.rows[0].status,'saved')
   api.pausePlaylistImport();finish([hit]);await run
@@ -112,7 +115,7 @@ test('结束导入保留已保存歌曲，未完成的请求不能重新开启�
     if(++calls===2){start();return new Promise(resolve=>{finish=resolve})}
     return Promise.resolve([hit])
   }
-  api.newPlaylistImport({source:'text',name:'歌单',songs:[source,{...source,sourceId:'2'}]},'歌单')
+  api.newPlaylistImport({source:'text',name:'歌单',songs:[source,{...source,sourceId:'2',title:'晴天！'}]},'歌单')
   const run=api.runPlaylistImport();await started
   assert.equal(globalThis.__importTest.commits.length,1)
   api.clearPlaylistImport();finish([hit]);await run
@@ -137,45 +140,41 @@ test('重新匹配从已保存歌单恢复，不搜索全歌单，不保留候�
   assert.equal(api.usePlaylistImport.getState().job,null)
   assert.throws(()=>api.makePlaylistReview({...playlist,id:'playlist:normal'},[track],'profile-A'))
 })
-test('三首并发且搜索发起错开，后完成的首曲不会让歌单顺序错乱',async()=>{
+test('两首流水并行且搜索统一错开，先完成后曲也不会打乱原顺序',async()=>{
   await reset()
-  const resolvers=[],times=[]
-  let third
-  const thirdStarted=new Promise(resolve=>{third=resolve})
+  const resolvers=[],times=[],waiters=[]
+  let active=0,peak=0
+  const waitFor=n=>resolvers.length>=n?Promise.resolve():new Promise(resolve=>waiters.push({n,resolve}))
   globalThis.__importTest.search=()=>new Promise(resolve=>{
-    resolvers.push(resolve);times.push(Date.now());if(resolvers.length===3)third()
+    peak=Math.max(peak,++active)
+    resolvers.push(items=>{active--;resolve(items)});times.push(Date.now());waiters.filter(w=>resolvers.length>=w.n).forEach(w=>w.resolve())
   })
   const bvids=['BV1GJ411x7h7','BV1GJ411x7h8','BV1GJ411x7h9']
   globalThis.__importTest.details=async bvid=>({...detail,bvid,parts:[{...detail.parts[0],cid:123+bvids.indexOf(bvid)}]})
-  api.newPlaylistImport({source:'text',name:'并发顺序',songs:[source,{...source,sourceId:'2'},{...source,sourceId:'3'}]},'并发顺序')
-  const run=api.runPlaylistImport();await thirdStarted
-  assert.equal(resolvers.length,3)
-  assert.ok(times[1]-times[0]>=1100);assert.ok(times[2]-times[1]>=1100)
-  const laterCompleted=new Promise(resolve=>{
-    const unsubscribe=api.usePlaylistImport.subscribe(state=>{
-      if(state.job.rows[1].status==='matched'&&state.job.rows[2].status==='matched'){unsubscribe();resolve()}
-    })
-  })
-  resolvers[2]([{...hit,bvid:bvids[2]}]);resolvers[1]([{...hit,bvid:bvids[1]}]);await laterCompleted
-  assert.equal(globalThis.__importTest.commits.length,0)
-  resolvers[0]([{...hit,bvid:bvids[0]}]);await run
+  api.newPlaylistImport({source:'text',name:'流水顺序',songs:[source,{...source,sourceId:'2',title:'晴天！'},{...source,sourceId:'3',title:'《晴天》'}]},'流水顺序')
+  const run=api.runPlaylistImport();await waitFor(2)
+  assert.equal(peak,2);assert.equal(resolvers.length,2)
+  resolvers[1]([{...hit,bvid:bvids[1]}]);await waitFor(3)
+  assert.equal(peak,2);assert.equal(globalThis.__importTest.commits.length,0)
+  resolvers[2]([{...hit,bvid:bvids[2]}]);resolvers[0]([{...hit,bvid:bvids[0]}]);await run
+  assert.ok(times[1]-times[0]>=2900);assert.ok(times[2]-times[1]>=2900)
   assert.equal(api.usePlaylistImport.getState().job.state,'done')
   assert.deepEqual(globalThis.__importTest.commits.flatMap(write=>write.entries.map(entry=>entry.track.cid)),[123,124,125])
 })
-test('同一首的候选详情并行解析，并发上限为三，结果不受响应顺序影响',async()=>{
+test('手动查找逐个读取候选详情，保留可选版本',async()=>{
   await reset()
   const bvids=['BV1GJ411x7h7','BV1GJ411x7h8','BV1GJ411x7h9']
   globalThis.__importTest.search=async()=>bvids.map(bvid=>({...hit,bvid}))
-  let third,active=0,peak=0
-  const resolvers=[],started=new Promise(resolve=>{third=resolve})
+  let active=0,peak=0
+  const resolvers=[],waiters=[]
+  const waitFor=n=>resolvers.length>=n?Promise.resolve():new Promise(resolve=>waiters.push({n,resolve}))
   globalThis.__importTest.details=bvid=>new Promise(resolve=>{
     peak=Math.max(peak,++active)
     resolvers.push(()=>{active--;resolve({...detail,bvid,parts:[{...detail.parts[0],cid:123+bvids.indexOf(bvid)}]})})
-    if(resolvers.length===3)third()
+    waiters.filter(w=>resolvers.length>=w.n).forEach(w=>w.resolve())
   })
-  const result=api.findImportCandidates(source,new AbortController().signal)
-  await started;assert.equal(peak,3)
-  resolvers.reverse().forEach(resolve=>resolve())
+  const result=api.findImportCandidates(source,new AbortController().signal,'晴天 周杰伦')
+  for(let i=0;i<3;i++){await waitFor(i+1);assert.equal(peak,1);resolvers[i]()}
   assert.deepEqual((await result).map(choice=>choice.track.source.cid),[123,124,125])
 })
 test('续导时批量保存超过100首的已匹配项，不漏掉剩余批次',async()=>{
@@ -191,4 +190,90 @@ test('续导时批量保存超过100首的已匹配项，不漏掉剩余批次',
   await api.runPlaylistImport()
   assert.deepEqual(globalThis.__importTest.commits.map(write=>write.entries.length),[100,100,50])
   assert.ok(api.usePlaylistImport.getState().job.rows.every(row=>row.status==='saved'))
+})
+
+test('关闭活动导入后，歌单重新匹配仍包含原始未匹配项及原序号',async()=>{
+ await reset()
+ const songs=[source,{...source,sourceId:'missing',title:'未匹配歌曲'},{...source,sourceId:'third',title:'第三首'}]
+ api.newPlaylistImport({source:'text',name:'保留原始清单',songs},'保留原始清单')
+ const job=api.usePlaylistImport.getState().job
+ const one={id:'bilibili:BV1GJ411x7h7:1',title:'第一首',source:{provider:'bilibili',bvid:'BV1GJ411x7h7',cid:1,page:1},durationSeconds:269,liked:false}
+ const three={...one,id:'bilibili:BV1GJ411x7h7:3',title:'第三首',source:{...one.source,cid:3}}
+ job.rows[0].status='saved';job.rows[0].chosen={track:one,evidence:{bvid:one.source.bvid,cid:1,title:one.title}}
+ job.rows[1].status='missing';job.rows[2].status='saved';job.rows[2].chosen={track:three,evidence:{bvid:three.source.bvid,cid:3,title:three.title}}
+ job.state='matching';api.pausePlaylistImport();await new Promise(setImmediate)
+ api.clearPlaylistImport();await new Promise(setImmediate)
+ const playlist={id:job.playlistId,name:job.name,isSystem:false}
+ const restored=await api.loadPlaylistReview(playlist,[one,three],job.scope)
+ assert.equal(restored.rows.length,3);assert.equal(restored.rows[1].status,'missing');assert.equal(restored.rows[1].order,1)
+ const choice={track:{...one,id:'bilibili:BV1GJ411x7h7:2',source:{...one.source,cid:2}},evidence:{bvid:one.source.bvid,cid:2,title:'补齐'}}
+ const next=await api.acceptReviewCandidate(restored,1,choice)
+ assert.equal(next.rows[1].status,'saved');assert.equal(globalThis.__importTest.commits.at(-1).entries[0].originalPosition,1)
+})
+
+test('复核同一活动歌单时先暂停，替换结果也更新续导档案',async()=>{
+ await reset();api.newPlaylistImport({source:'text',name:'活动歌单',songs:[source]},'活动歌单')
+ const job=api.usePlaylistImport.getState().job
+ const track={id:'bilibili:BV1GJ411x7h7:1',title:'原视频',source:{provider:'bilibili',bvid:'BV1GJ411x7h7',cid:1,page:1},durationSeconds:269,liked:false}
+ job.rows[0].status='saved';job.rows[0].chosen={track,evidence:{}}
+ job.state='matching'
+ const review=await api.loadPlaylistReview({id:job.playlistId,name:job.name,isSystem:false},[track],job.scope)
+ assert.equal(api.usePlaylistImport.getState().job.state,'paused')
+ const replacement={...track,id:'bilibili:BV1GJ411x7h7:2',source:{...track.source,cid:2}}
+ await api.acceptReviewCandidate(review,0,{track:replacement,evidence:{}})
+ assert.equal(api.usePlaylistImport.getState().job.rows[0].chosen.track.id,replacement.id)
+ assert.equal(api.usePlaylistImport.getState().job.state,'paused')
+})
+
+test('打开复核会等待在途保存并重读条目，不把刚保存的歌曲当作移除',async()=>{
+ await reset();api.newPlaylistImport({source:'text',name:'正在保存',songs:[source]},'正在保存')
+ let release,started
+ globalThis.__importTest.commitWait=new Promise(resolve=>release=resolve)
+ const entered=new Promise(resolve=>started=resolve);globalThis.__importTest.commitStarted=started
+ const run=api.runPlaylistImport();await entered
+ const job=api.usePlaylistImport.getState().job
+ const chosen=job.rows[0].chosen.track
+ globalThis.__importTest.tracks=[chosen]
+ let completed=false
+ const pending=api.loadPlaylistReview({id:job.playlistId,name:job.name,isSystem:false},[],job.scope).then(value=>{completed=true;return value})
+ await new Promise(setImmediate);assert.equal(completed,false)
+ release();const review=await pending;await run
+ assert.equal(review.rows.length,1);assert.equal(review.rows[0].status,'saved');assert.equal(review.rows[0].chosen.track.id,chosen.id)
+})
+
+test('重复搜索复用成功结果，自动匹配不额外读取已无必要的候选详情',async()=>{
+ await reset();let searches=0,details=0
+ globalThis.__importTest.search=async()=>{searches++;return [hit,{...hit,bvid:'BV1GJ411x7h8'},{...hit,bvid:'BV1GJ411x7h9'}]}
+ globalThis.__importTest.details=async()=>{details++;return detail}
+ for(let i=0;i<2;i++){api.newPlaylistImport({source:'text',name:'复用搜索',songs:[source]},'复用搜索');await api.runPlaylistImport()}
+ assert.equal(searches,1);assert.equal(details,2,'each match stops after the first verified acceptable candidate')
+ assert.equal(globalThis.__importTest.commits.length,2)
+})
+
+test('间歇性限流不会被单首成功清零；冷却期间继续操作也不会立即请求',async t=>{
+ await reset();t.mock.timers.enable({apis:['Date','setTimeout'],now:Date.now()})
+ let calls=0
+ globalThis.__importTest.search=async()=>{if(++calls!==2)throw {message:'B站提示限制搜索'};return [hit]}
+ const flush=()=>new Promise(setImmediate)
+ try{
+  api.newPlaylistImport({source:'text',name:'限流续导',songs:[source,{...source,sourceId:'2',title:'晴天！'}]},'限流续导')
+  const run=api.runPlaylistImport();await flush()
+  assert.equal(calls,1);assert.equal(api.usePlaylistImport.getState().job.state,'waiting')
+  assert.equal(api.usePlaylistImport.getState().job.retries,1)
+  t.mock.timers.tick(120_000);await flush()
+  assert.equal(calls,2);assert.equal(api.usePlaylistImport.getState().job.rows[0].status,'saved')
+  assert.equal(api.usePlaylistImport.getState().job.retries,1,'one successful song cannot erase the limit history')
+  t.mock.timers.tick(6000);await flush();assert.equal(calls,3)
+  assert.equal(api.usePlaylistImport.getState().job.retries,2)
+  t.mock.timers.tick(300_000);await flush();await run
+  assert.equal(calls,4);assert.equal(api.usePlaylistImport.getState().job.state,'paused')
+  const job=api.usePlaylistImport.getState().job
+  const archive=JSON.parse(globalThis.__importTest.archives.get(job.scope+':'+job.playlistId))
+  assert.ok(archive.retryAt>Date.now());assert.equal(job.rows[1].status,'pending')
+  const resume=api.runPlaylistImport();await flush();assert.equal(calls,4)
+  assert.equal(api.usePlaylistImport.getState().job.state,'waiting')
+  api.pausePlaylistImport();await resume
+  await assert.rejects(api.findImportCandidates({...source,title:'另一首'},new AbortController().signal,'另一首'),/限制了搜索/)
+  assert.equal(calls,4)
+ }finally{api.pausePlaylistImport();t.mock.timers.reset()}
 })

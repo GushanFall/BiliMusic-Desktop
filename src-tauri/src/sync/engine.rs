@@ -421,7 +421,8 @@ fn causal_conflicts(doc: &Document, current: &View) -> Result<Vec<Conflict>, Str
     let mut result = Vec::new();
     for key in keys {
         let (entity, field): (String, String) = serde_json::from_str(&key).map_err(err)?;
-        if entity.starts_with("favorite:") || field == "__order"
+        if entity.starts_with("favorite:")
+            || field == "__order"
             || upgrade_merge::automatic_field(&field)
             || doc.scope.domain == Domain::Progress
         {
@@ -1132,15 +1133,24 @@ mod tests {
         let (mut cfg, secret, store, server) = super::super::test_dav::server().await;
         cfg.initialized = false;
         store.lock().unwrap().dirs.retain(|d| d == "/dav/");
-        probe(&cfg, &secret).await.expect("first connection must accept missing Nutstore ancestors");
+        probe(&cfg, &secret)
+            .await
+            .expect("first connection must accept missing Nutstore ancestors");
         {
             let s = store.lock().unwrap();
             assert_eq!(s.dirs.len(), 1);
             assert!(s.files.is_empty());
-            assert!(s.requests.iter().all(|(m, _)| matches!(m.as_str(), "GET" | "PROPFIND")));
+            assert!(
+                s.requests
+                    .iter()
+                    .all(|(m, _)| matches!(m.as_str(), "GET" | "PROPFIND"))
+            );
         }
         let a = device(&cfg);
-        change(&a, &format!("INSERT INTO playlists(id,name) VALUES('{LIST}','first playlist')"));
+        change(
+            &a,
+            &format!("INSERT INTO playlists(id,name) VALUES('{LIST}','first playlist')"),
+        );
         sync(&a, &cfg, &secret, None, true).await.unwrap();
         assert!(store.lock().unwrap().files.is_empty());
         assert!(store.lock().unwrap().dirs.iter().all(|d| d == "/dav/"));
@@ -1148,7 +1158,9 @@ mod tests {
         let b = device(&cfg);
         assert!(run(&b, &cfg, &secret).await.conflicts.is_empty());
         assert_eq!(value(&b, "name"), "first playlist");
-        for d in [a,b] { std::fs::remove_dir_all(d.1).unwrap(); }
+        for d in [a, b] {
+            std::fs::remove_dir_all(d.1).unwrap();
+        }
         server.abort();
     }
     fn device(cfg: &Config) -> Database {
@@ -1182,53 +1194,155 @@ mod tests {
     }
     #[tokio::test]
     async fn favorites_join_add_wins_and_later_unlike_propagates_without_prompts() {
-        let (cfg,secret,_store,server)=super::super::test_dav::server().await;
-        let a=device(&cfg);let b=device(&cfg);
-        for db in [&a,&b] {change(db,"INSERT INTO source_items(id,provider,bvid,cid) VALUES('bilibili:BV123:1','bilibili','BV123',1);INSERT INTO tracks(id,source_item_id,title) VALUES('bilibili:BV123:1','bilibili:BV123:1','song');INSERT INTO favorites(track_id) VALUES('bilibili:BV123:1');");}
-        run(&a,&cfg,&secret).await;run(&b,&cfg,&secret).await;
-        change(&a,"DELETE FROM favorites");run(&a,&cfg,&secret).await;
+        let (cfg, secret, _store, server) = super::super::test_dav::server().await;
+        let a = device(&cfg);
+        let b = device(&cfg);
+        for db in [&a, &b] {
+            change(
+                db,
+                "INSERT INTO source_items(id,provider,bvid,cid) VALUES('bilibili:BV123:1','bilibili','BV123',1);INSERT INTO tracks(id,source_item_id,title) VALUES('bilibili:BV123:1','bilibili:BV123:1','song');INSERT INTO favorites(track_id) VALUES('bilibili:BV123:1');",
+            );
+        }
+        run(&a, &cfg, &secret).await;
+        run(&b, &cfg, &secret).await;
+        change(&a, "DELETE FROM favorites");
+        run(&a, &cfg, &secret).await;
         // Upgrading an old local database with a like must not require a choice.
-        let c=device(&cfg);change(&c,"INSERT INTO source_items(id,provider,bvid,cid) VALUES('bilibili:BV123:1','bilibili','BV123',1);INSERT INTO tracks(id,source_item_id,title) VALUES('bilibili:BV123:1','bilibili:BV123:1','song');INSERT INTO favorites(track_id) VALUES('bilibili:BV123:1');");
-        for db in [&c,&a,&b] {assert!(run(db,&cfg,&secret).await.conflicts.is_empty());}
-        let count=|db:&Database|db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM favorites",[],|r|r.get::<_,i64>(0)).unwrap();
-        assert_eq!(count(&a),1);assert_eq!(count(&b),1);
+        let c = device(&cfg);
+        change(
+            &c,
+            "INSERT INTO source_items(id,provider,bvid,cid) VALUES('bilibili:BV123:1','bilibili','BV123',1);INSERT INTO tracks(id,source_item_id,title) VALUES('bilibili:BV123:1','bilibili:BV123:1','song');INSERT INTO favorites(track_id) VALUES('bilibili:BV123:1');",
+        );
+        for db in [&c, &a, &b] {
+            assert!(run(db, &cfg, &secret).await.conflicts.is_empty());
+        }
+        let count = |db: &Database| {
+            db.0.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM favorites", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        assert_eq!(count(&a), 1);
+        assert_eq!(count(&b), 1);
         // A normal cancellation AFTER seeing the like still removes it everywhere.
-        change(&b,"DELETE FROM favorites");
-        for db in [&b,&a,&c] {assert!(run(db,&cfg,&secret).await.conflicts.is_empty());assert_eq!(count(db),0);}
-        server.abort();for db in [&a,&b,&c] {std::fs::remove_dir_all(&db.1).unwrap();}
+        change(&b, "DELETE FROM favorites");
+        for db in [&b, &a, &c] {
+            assert!(run(db, &cfg, &secret).await.conflicts.is_empty());
+            assert_eq!(count(db), 0);
+        }
+        server.abort();
+        for db in [&a, &b, &c] {
+            std::fs::remove_dir_all(&db.1).unwrap();
+        }
     }
     #[tokio::test]
     async fn large_library_sort_preferences_are_sparse_and_concurrent_changes_converge() {
-        use crate::interface::list_preferences::{self,Preference};
-        let (cfg,secret,_store,server)=super::super::test_dav::server().await;
-        let a=device(&cfg);let b=device(&cfg);
+        use crate::interface::list_preferences::{self, Preference};
+        let (cfg, secret, _store, server) = super::super::test_dav::server().await;
+        let a = device(&cfg);
+        let b = device(&cfg);
         {
-            let c=a.0.lock().unwrap();let tx=c.unchecked_transaction().unwrap();
-            for list in 0..15 {c.execute("INSERT INTO playlists(id,name) VALUES(?1,?2)",params![format!("00000000-0000-4000-8000-{list:012}"),format!("List {list}")]).unwrap();}
+            let c = a.0.lock().unwrap();
+            let tx = c.unchecked_transaction().unwrap();
+            for list in 0..15 {
+                c.execute(
+                    "INSERT INTO playlists(id,name) VALUES(?1,?2)",
+                    params![
+                        format!("00000000-0000-4000-8000-{list:012}"),
+                        format!("List {list}")
+                    ],
+                )
+                .unwrap();
+            }
             for cid in 1..=500 {
-                let id=format!("bilibili:BVsort{cid}:{cid}");
-                c.execute("INSERT INTO source_items(id,provider,bvid,cid) VALUES(?1,'bilibili',?2,?3)",params![id,format!("BVsort{cid}"),cid]).unwrap();
-                c.execute("INSERT INTO tracks(id,source_item_id,title) VALUES(?1,?1,'song')",[&id]).unwrap();
-                for list in 0..15 {c.execute("INSERT INTO playlist_items(playlist_id,track_id,position) VALUES(?1,?2,?3)",params![format!("00000000-0000-4000-8000-{list:012}"),id,cid]).unwrap();}
-            }tx.commit().unwrap();
+                let id = format!("bilibili:BVsort{cid}:{cid}");
+                c.execute(
+                    "INSERT INTO source_items(id,provider,bvid,cid) VALUES(?1,'bilibili',?2,?3)",
+                    params![id, format!("BVsort{cid}"), cid],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO tracks(id,source_item_id,title) VALUES(?1,?1,'song')",
+                    [&id],
+                )
+                .unwrap();
+                for list in 0..15 {
+                    c.execute("INSERT INTO playlist_items(playlist_id,track_id,position) VALUES(?1,?2,?3)",params![format!("00000000-0000-4000-8000-{list:012}"),id,cid]).unwrap();
+                }
+            }
+            tx.commit().unwrap();
         }
-        run(&a,&cfg,&secret).await;run(&b,&cfg,&secret).await;
-        let entity="playlist:00000000-0000-4000-8000-000000000000";
-        let before=with(&a,&cfg,|c|projection::capture(c,&cfg.uid,false)).unwrap();
-        list_preferences::save(&a.0.lock().unwrap(),&[Preference{entity:entity.into(),display_rank:Some("10000000000000000000".into()),sort_rule:Some("name:asc".into())}]).unwrap();
-        let after=with(&a,&cfg,|c|projection::capture(c,&cfg.uid,false)).unwrap();
-        let edits=after.facts.iter().filter(|(k,v)|before.facts.get(*k)!=Some(*v)).collect::<Vec<_>>();
-        assert_eq!(edits.len(),2);assert!(edits.iter().all(|(key,_)|!key.contains("position")));
-        let (outcome,usage)=super::super::traffic::capture(run(&a,&cfg,&secret)).await;
+        run(&a, &cfg, &secret).await;
+        run(&b, &cfg, &secret).await;
+        let entity = "playlist:00000000-0000-4000-8000-000000000000";
+        let before = with(&a, &cfg, |c| projection::capture(c, &cfg.uid, false)).unwrap();
+        list_preferences::save(
+            &a.0.lock().unwrap(),
+            &[Preference {
+                entity: entity.into(),
+                display_rank: Some("10000000000000000000".into()),
+                sort_rule: Some("name:asc".into()),
+            }],
+        )
+        .unwrap();
+        let after = with(&a, &cfg, |c| projection::capture(c, &cfg.uid, false)).unwrap();
+        let edits = after
+            .facts
+            .iter()
+            .filter(|(k, v)| before.facts.get(*k) != Some(*v))
+            .collect::<Vec<_>>();
+        assert_eq!(edits.len(), 2);
+        assert!(edits.iter().all(|(key, _)| !key.contains("position")));
+        let (outcome, usage) = super::super::traffic::capture(run(&a, &cfg, &secret)).await;
         assert!(outcome.conflicts.is_empty());
-        assert!(usage.uploaded_bytes<32_000,"one sort change uploaded {} bytes",usage.uploaded_bytes);
-        eprintln!("15 playlists × 500 items: sort change uploaded {} bytes",usage.uploaded_bytes);
-        list_preferences::save(&b.0.lock().unwrap(),&[Preference{entity:entity.into(),display_rank:None,sort_rule:Some("date:desc".into())}]).unwrap();
-        for d in [&b,&a,&b,&a] {assert!(run(d,&cfg,&secret).await.conflicts.is_empty());}
-        let read=|d:&Database|d.0.lock().unwrap().query_row("SELECT sort_rule FROM list_preferences WHERE entity=?1",[entity],|r|r.get::<_,String>(0)).unwrap();
-        assert_eq!(read(&a),read(&b));
-        for d in [&a,&b] {assert_eq!(d.0.lock().unwrap().query_row("SELECT COUNT(*) FROM playlist_items WHERE position BETWEEN 1 AND 500",[],|r|r.get::<_,i64>(0)).unwrap(),7500);}
-        server.abort();std::fs::remove_dir_all(a.1).unwrap();std::fs::remove_dir_all(b.1).unwrap();
+        assert!(
+            usage.uploaded_bytes < 32_000,
+            "one sort change uploaded {} bytes",
+            usage.uploaded_bytes
+        );
+        eprintln!(
+            "15 playlists × 500 items: sort change uploaded {} bytes",
+            usage.uploaded_bytes
+        );
+        list_preferences::save(
+            &b.0.lock().unwrap(),
+            &[Preference {
+                entity: entity.into(),
+                display_rank: None,
+                sort_rule: Some("date:desc".into()),
+            }],
+        )
+        .unwrap();
+        for d in [&b, &a, &b, &a] {
+            assert!(run(d, &cfg, &secret).await.conflicts.is_empty());
+        }
+        let read = |d: &Database| {
+            d.0.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT sort_rule FROM list_preferences WHERE entity=?1",
+                    [entity],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(read(&a), read(&b));
+        for d in [&a, &b] {
+            assert_eq!(
+                d.0.lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT COUNT(*) FROM playlist_items WHERE position BETWEEN 1 AND 500",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                7500
+            );
+        }
+        server.abort();
+        std::fs::remove_dir_all(a.1).unwrap();
+        std::fs::remove_dir_all(b.1).unwrap();
     }
     #[tokio::test]
     async fn real_executor_bootstraps_joins_and_merges_offline_fields_without_upload_echo() {

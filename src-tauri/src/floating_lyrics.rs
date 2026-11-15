@@ -233,6 +233,9 @@ pub async fn floating_lyrics_enable(window: WebviewWindow, enabled: bool) -> Res
     let app = window.app_handle();
     let state = app.state::<FloatingLyrics>();
     if !enabled {
+        use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+        let _ =
+            app.save_window_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
         state.watcher.fetch_add(1, Ordering::AcqRel);
         // Reuse macOS WebKit views between uses to avoid tearing down a
         // scrolling tree while display-link callbacks may still be pending.

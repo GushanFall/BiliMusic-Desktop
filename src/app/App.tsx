@@ -1,3 +1,4 @@
+import { restoreScroll } from '../shared/restoreScroll'
 import {useOrganizer} from '../shared/useOrganizer'
 import {useListPreferences,playlistEntity} from '../services/listPreferences'
 import {rankList} from '../services/listOrdering'
@@ -18,7 +19,7 @@ import { hydrateVisibleTracks } from '../services/sync'
 import { LyricsBackdrop } from '../features/lyrics/LyricsBackdrop'
 import { ImmersiveTitlebar } from '../shared/ImmersiveTitlebar'
 import { desktopFrame, setImmersiveWindow } from '../services/immersiveWindow'
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { version as appVersion } from '../../package.json'
 import { listen } from '@tauri-apps/api/event'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -74,6 +75,7 @@ import { showTrackMenu } from '../features/library/trackActionStore'
 import { isMobile } from '../services/platform'
 import { PlayerProgress } from '../features/player/PlayerProgress'
 import { SidebarResizeHandle } from '../shared/SidebarResizeHandle'
+import { QueueResizeHandle } from '../shared/QueueResizeHandle'
 import { MiniPlayer } from '../features/player/MiniPlayer'
 import { getMiniPlayerMode, miniPlayerSupported, setMiniPlayerMode } from '../services/immersiveWindow'
 import { PictureInPicture2 } from 'lucide-react'
@@ -94,32 +96,43 @@ export function App() {
   const [sleepTimerOpen, setSleepTimerOpen] = useState(false)
   const [selectedCollection,setSelectedCollection]=useState<Collection|null>(null)
   const [collectionSearch,setCollectionSearch]=useState('')
-  useEffect(()=>setCollectionSearch(''),[selectedCollection?.bvid])
+
   const [hubSection,setHubSection]=useState<'playlists'|'collections'|'creators'>('playlists')
   const contentScroll=useRef<HTMLDivElement>(null)
-  const collectionHistory = useRef<{ item: Collection | null; scroll: number; lyrics: boolean }[]>([])
+  const collectionHistory = useRef<{ item: Collection | null; scroll: number; lyrics: boolean; search:string }[]>([])
   const libraryReturn = useRef<{ nav: string; scroll: number } | null>(null)
-  const scrollCollection = (top: number) => {
-    requestAnimationFrame(() => { if (contentScroll.current) contentScroll.current.scrollTop = top })
-  }
+  const pendingCollectionScroll = useRef<number | undefined>(undefined)
+  const cancelCollectionScroll = useRef<(() => void) | undefined>(undefined)
+  const scrollCollection = (top: number) => { pendingCollectionScroll.current = top }
+  useLayoutEffect(() => {
+    const top = pendingCollectionScroll.current
+    if (top === undefined || !contentScroll.current) return
+    pendingCollectionScroll.current = undefined
+    cancelCollectionScroll.current?.()
+    cancelCollectionScroll.current = restoreScroll(contentScroll.current, top)
+  })
+  useEffect(() => () => cancelCollectionScroll.current?.(), [])
   const resetCollection = () => {
     collectionHistory.current = []
     setSelectedCollection(null)
+    setCollectionSearch('')
   }
   const openCollection = (item: Collection, origin?: 'lyrics' | 'collection') => {
     const scroll = contentScroll.current?.scrollTop || 0
     if (origin) {
-      collectionHistory.current.push({ item: selectedCollection, scroll, lyrics: origin === 'lyrics' })
+      collectionHistory.current.push({ item: selectedCollection, scroll, lyrics: origin === 'lyrics', search:collectionSearch })
     } else {
-      collectionHistory.current = [{ item: null, scroll: collectionHistory.current[0]?.scroll ?? scroll, lyrics: false }]
+      collectionHistory.current = [{ item: null, scroll: collectionHistory.current[0]?.scroll ?? scroll, lyrics: false, search:collectionSearch }]
     }
     if (origin === 'lyrics') setLyricsOpen(false)
     setSelectedCollection(item)
+    setCollectionSearch('')
     scrollCollection(0)
   }
   const closeCollection = () => {
     const origin = collectionHistory.current.pop()
     setSelectedCollection(origin?.item ?? null)
+    setCollectionSearch(origin?.search ?? '')
     if (origin?.lyrics && usePlayerStore.getState().current) setLyricsOpen(true)
     scrollCollection(origin?.scroll ?? 0)
   }
@@ -224,6 +237,16 @@ export function App() {
   }, [current?.id, current?.partCount, current?.resolveParts, queryClient])
   const status = usePlayerStore((state) => state.status)
   const queueOpen = usePlayerStore((state) => state.queueOpen)
+  useEffect(() => {
+    if (!queueOpen || isMobile) return
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Element | null
+      if (event.button !== 0 || target?.closest('.queue-drawer, .queue-control, .player-dock, [aria-modal="true"], [role="menu"], .action-menu-panel, .track-context-menu')) return
+      usePlayerStore.setState({queueOpen:false})
+    }
+    document.addEventListener('pointerdown', outside)
+    return () => document.removeEventListener('pointerdown', outside)
+  }, [queueOpen])
   const queue = usePlayerStore((state) => state.queue)
   const queueSource = usePlayerStore(state => state.queueSource)
   const queueFeedback = usePlayerStore(state => state.queueFeedback)
@@ -388,10 +411,11 @@ export function App() {
       if (event.defaultPrevented || document.querySelector('[aria-modal="true"]')) return
       const shortcut = isMobile ? playerShortcut(event) : resolveShortcut(event, useShortcutStore.getState().bindings)
       if (!shortcut) return
-      if (event.repeat && ['toggle','next','previous'].includes(shortcut)) { event.preventDefault();return }
+      if (event.repeat && ['toggle','next','previous','refreshSync'].includes(shortcut)) { event.preventDefault();return }
       if(run(shortcut))event.preventDefault()
     }
     const run=(shortcut:ShortcutAction)=>{
+      if(shortcut==='refreshSync'){window.dispatchEvent(new Event('bilimusic-refresh-requested'));return true}
       if(shortcut==='listSearch'){
         const search=new Event('bilimusic-list-search',{cancelable:true});window.dispatchEvent(search);return search.defaultPrevented
       }
@@ -500,8 +524,9 @@ export function App() {
 
         <div className="stage-scroll" ref={searchScroll} hidden={!searchActive}>{submittedQuery ? <SearchView key={submittedQuery} query={submittedQuery} active={searchActive} onCollectionOpen={openCollection} /> : <section className="discover-view search-landing"><span className="eyebrow">SEARCH</span><h2>寻找下一首歌</h2><p>搜索歌曲、歌手、B站音乐与有声内容。</p><div className="quick-actions">{['音乐现场', '纯音乐 合集', '游戏原声', '有声书', '爵士', '钢琴'].map((keyword) => <button key={keyword} onClick={() => openSearch(keyword)}><Search /><strong>{keyword}</strong><ChevronRight /></button>)}</div></section>}</div>
         <div className="stage-scroll" ref={contentScroll} hidden={searchActive}>
-          {selectedCollection && <CollectionDetail key={selectedCollection.bvid} item={selectedCollection} onBack={closeCollection}
-            hideBack searchQuery={collectionSearch} onOpenCollection={item => openCollection(item, 'collection')}/>}
+          {[...new Map([...collectionHistory.current.map(entry => entry.item), selectedCollection].filter((item): item is Collection => Boolean(item)).map(item => [item.bvid,item])).values()].map(item => <div key={item.bvid} hidden={item.bvid !== selectedCollection?.bvid}>
+            <CollectionDetail item={item} onBack={closeCollection} hideBack searchQuery={item.bvid === selectedCollection?.bvid ? collectionSearch : collectionHistory.current.find(entry => entry.item?.bvid === item.bvid)?.search} onOpenCollection={item => openCollection(item, 'collection')}/>
+          </div>)}
           <div hidden={Boolean(selectedCollection)}>
           {activeCreatorFolder!==undefined ? <CreatorsView key={activeCreatorFolder} followed folderId={activeCreatorFolder} onOpen={openCollection} onOpenFolder={openCreatorFolder} onFolderRemoved={closeLibraryPage}/> : activeFolder !== undefined ? <CollectionsView key={activeFolder} folderId={activeFolder} onOpenFolder={openFolder}
             onOpenLinked={openPlaylist} onLinkedRemoved={playlistRemoved} onSelect={openCollection} onFolderRemoved={folderRemoved}/> :
@@ -554,7 +579,8 @@ export function App() {
       </main>
 
       {queueOpen && isMobile && <button className="queue-sheet-backdrop" aria-label="收起播放队列" onClick={toggleQueue} />}
-      <aside className={`queue-drawer${isMobile ? ' queue-sheet' : ''}`} aria-hidden={!queueOpen}>
+      <aside id="playback-queue" className={`queue-drawer${isMobile ? ' queue-sheet' : ''}`} aria-hidden={!queueOpen} inert={!queueOpen}>
+        {!isMobile && <QueueResizeHandle/>}
         {isMobile && <button className="queue-sheet-handle" aria-label="收起播放队列" onClick={toggleQueue}><span /></button>}
         <header><div><span className="eyebrow coral">播放队列 · {queue.length}</span><h3 className="queue-heading-title">{queueSource?.kind === 'video' && queue.length > 1 ? '视频选集' : queueSource?.kind === 'season' ? queueSource.title : '接下来'}</h3></div><div className="queue-header-actions"><button disabled={queue.length < 2} onClick={reverseQueue} aria-pressed={queueReversed} aria-label={queueReversed ? '恢复原序' : '倒序播放'} title={queueReversed ? '恢复原序' : '倒序播放'}><ArrowDownUp size={16}/><span>{queueReversed ? '倒序' : '原序'}</span></button><button disabled={!queue.length} onClick={clearQueue} aria-label="清空队列"><Trash2 size={16} /></button><button onClick={toggleQueue} aria-label="收起队列">{isMobile ? <ChevronDown size={20}/> : '×'}</button></div></header>
         <div className="now-card">

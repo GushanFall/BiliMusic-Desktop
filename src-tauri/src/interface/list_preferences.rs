@@ -1,9 +1,9 @@
 //! Small per-list view preferences. No materialized song ordering is uploaded.
 use crate::{
     infrastructure::database::Database,
-    sync::model::{text, Snapshot},
+    sync::model::{Snapshot, text},
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tauri::State;
@@ -210,15 +210,17 @@ mod tests {
                 .unwrap(),
             0
         );
-        assert!(save(
-            &c,
-            &[Preference {
-                entity: "view:favorites".into(),
-                display_rank: None,
-                sort_rule: Some("invalid".into())
-            }]
-        )
-        .is_err());
+        assert!(
+            save(
+                &c,
+                &[Preference {
+                    entity: "view:favorites".into(),
+                    display_rank: None,
+                    sort_rule: Some("invalid".into())
+                }]
+            )
+            .is_err()
+        );
         save(
             &c,
             &[Preference {
@@ -230,14 +232,16 @@ mod tests {
         .unwrap();
         let local_view = crate::sync::storage::export(&c, "42", false).unwrap();
         assert!(!local_view.records.contains_key("collection:BV1GFRFBREe6"));
-        assert!(save(
-            &c,
-            &[Preference {
-                entity: "playlist:deleted".into(),
-                display_rank: None,
-                sort_rule: Some("name:asc".into())
-            }]
-        )
-        .is_err());
+        assert!(
+            save(
+                &c,
+                &[Preference {
+                    entity: "playlist:deleted".into(),
+                    display_rank: None,
+                    sort_rule: Some("name:asc".into())
+                }]
+            )
+            .is_err()
+        );
     }
 }

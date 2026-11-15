@@ -1,7 +1,9 @@
+import { toTrack } from './collectionTrack'
+import type { Track } from '../domain/track'
 import { invoke } from '@tauri-apps/api/core'
 import type { QueryClient } from '@tanstack/react-query'
 import { usePlayerStore } from '../features/player/playerStore'
-import { inDesktopShell, fromStoredTrack, type StoredTrack } from './desktopApi'
+import { inDesktopShell, fromStoredTrack, getVideoParts, type StoredTrack } from './desktopApi'
 import { accountEpoch } from './accountScope'
 const attempted = new Map<string, number>()
 export async function hydrateSourceTitles(ids: string[], client: QueryClient) {
@@ -20,12 +22,26 @@ export async function hydrateSourceTitles(ids: string[], client: QueryClient) {
     try { changed += await invoke<number>('sync_hydrate_sources', { titleIds: pending.slice(i, i + 8) }) }
     catch { break } // Metadata failure never blocks playback or hides the cached name.
   }
-  if (changed && epoch === accountEpoch()) {
+  if (epoch === accountEpoch()) {
+    const updates = new Map<string,Track>()
     for (const track of usePlayerStore.getState().queue.filter(track => pending.includes(track.id))) {
       const stored = await invoke<StoredTrack | null>('sync_current_track', {trackId:track.id}).catch(() => null)
       if (epoch !== accountEpoch()) return
-      if (stored) usePlayerStore.getState().updateTrack({...track,...fromStoredTrack(stored)})
+      if (stored) {const next={...track,...fromStoredTrack(stored)};if(JSON.stringify(next)!==JSON.stringify(track))updates.set(track.id,next)}
+      else {
+        // Search-only queue entries need not exist in the library database.
+        const detail = await getVideoParts(track.source.bvid).catch(() => null)
+        if (epoch !== accountEpoch()) return
+        const part = detail?.parts.find(part => part.cid === track.source.cid)
+        if (detail && part) {
+          const canonical = toTrack(detail, part)
+          const next = {...track, displayTitle:canonical.displayTitle, videoTitle:canonical.videoTitle, partCount:canonical.partCount}
+          if(JSON.stringify(next)!==JSON.stringify(track))updates.set(track.id,next)
+        }
+      }
     }
-    await Promise.all(['listening-statistics','library','home-recent','list-preferences'].map(key => client.invalidateQueries({queryKey:[key]})))
+    if (updates.size) usePlayerStore.setState(state => ({queue:state.queue.map(track => updates.get(track.id)||track),current:state.current ? updates.get(state.current.id)||state.current : null}))
+    if (pending.length || changed) await Promise.all(['listening-statistics','library','home-recent','list-preferences'].map(key => client.invalidateQueries({queryKey:[key]})))
+
   }
 }

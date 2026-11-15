@@ -6,18 +6,17 @@ import { accountEpoch } from '../../services/accountScope'
 import { importFavoriteFolders, type FolderImportResult } from '../../services/biliFavoriteImport'
 import { commandErrorMessage, getAccountProfile, getFavoriteFolders, getFavoriteVideos, getVideoParts, listPlaylistTracks, type Playlist } from '../../services/desktopApi'
 import { reloadLinkedFolder } from '../../services/linkedFolders'
-import { parseSongList, type ImportChoice, type ImportPlaylist } from '../../services/playlistImportModel'
-import { acceptImportCandidate, bootPlaylistImport, clearPlaylistImport, commitImportTracks, findImportCandidates, makePlaylistReview, newPlaylistImport, pausePlaylistImport, replaceImportedPlaylistEntry, runPlaylistImport, usePlaylistImport, type ImportJob } from '../../services/playlistImport'
+import { parseSongList, playlistLinkPlatform, type ImportChoice, type ImportPlaylist } from '../../services/playlistImportModel'
+import { acceptImportCandidate, bootPlaylistImport, clearPlaylistImport, commitImportTracks, findImportCandidates, loadPlaylistReview, acceptReviewCandidate, newPlaylistImport, pausePlaylistImport, runPlaylistImport, usePlaylistImport, type ImportJob } from '../../services/playlistImport'
 import { Artwork } from '../../shared/Artwork'
 import { formatDuration } from '../../shared/time'
 import { usePlayerStore } from '../player/playerStore'
 
-type Source = 'bili'|'netease'|'qq'|'text'
-const sources: {id:Source;title:string;description:string;mark:string}[] = [
-  {id:'bili',title:'B 站收藏夹',description:'关联收藏夹，也可复制为歌单',mark:'B'},
-  {id:'netease',title:'网易云音乐',description:'粘贴歌单分享链接',mark:'网'},
-  {id:'qq',title:'QQ 音乐',description:'粘贴歌单分享链接',mark:'Q'},
-  {id:'text',title:'歌曲列表',description:'每行一首，批量匹配',mark:'文'},
+type Source = 'bili'|'online'|'text'
+const sources: {id:Source;title:string;description:string}[] = [
+  {id:'online',title:'在线歌单',description:'网易云、QQ、酷狗、酷我、咪咕'},
+  {id:'bili',title:'B 站收藏夹',description:'关联收藏夹，也可复制为歌单'},
+  {id:'text',title:'歌曲列表',description:'每行一首，批量匹配'},
 ]
 
 export function ImportPlaylistButton({onClick,sidebar=false}:{onClick:()=>void;sidebar?:boolean}) {
@@ -54,7 +53,7 @@ export function ImportFavorites({onClose,onImported,reviewPlaylist}:{onClose:()=
     let disposed=false
     const epoch=accountEpoch()
     setBusy(true)
-    void listPlaylistTracks(reviewPlaylist.id).then(tracks=>{if(!disposed&&epoch===accountEpoch())setReviewJob(makePlaylistReview(reviewPlaylist,tracks,scope))})
+    void listPlaylistTracks(reviewPlaylist.id).then(tracks=>loadPlaylistReview(reviewPlaylist,tracks,scope)).then(job=>{if(!disposed&&epoch===accountEpoch())setReviewJob(job)})
       .catch(cause=>{if(!disposed)setError(commandErrorMessage(cause))}).finally(()=>{if(!disposed)setBusy(false)})
     return ()=>{disposed=true}
   },[reviewPlaylist?.id,scope])
@@ -123,11 +122,9 @@ export function ImportFavorites({onClose,onImported,reviewPlaylist}:{onClose:()=
     const epoch=accountEpoch()
     try{
       if(reviewPlaylist&&reviewJob){
-        await replaceImportedPlaylistEntry(reviewPlaylist,reviewJob.rows[expanded].chosen!.track,choice,scope)
+        const next=await acceptReviewCandidate(reviewJob,expanded,choice)
         if(cancelled.current||epoch!==accountEpoch())return
-        const tracks=await listPlaylistTracks(reviewPlaylist.id)
-        if(cancelled.current||epoch!==accountEpoch())return
-        setReviewJob(makePlaylistReview(reviewPlaylist,tracks,scope))
+        setReviewJob(next)
       }else await acceptImportCandidate(expanded,choice)
       setExpanded(undefined);setManualChoices([]);await refresh()
     }
@@ -136,7 +133,7 @@ export function ImportFavorites({onClose,onImported,reviewPlaylist}:{onClose:()=
   }
   const title=reviewPlaylist?'重新匹配视频':page==='sources'?'导入歌单':page==='progress'?'导入进度':sources.find(source=>source.id===page)?.title||'导入歌单'
   const saved=new Set(job?.rows.filter(row=>row.status==='saved').map(row=>row.chosen?.track.id)).size,missing=job?.rows.filter(row=>row.status==='missing').length||0,processed=job?.rows.filter(row=>row.status!=='pending').length||0
-  const results=job?.rows.map((row,index)=>({row,index})).filter(({row})=>`${row.song.title} ${row.song.artists.join(' ')}`.toLocaleLowerCase().includes(resultQuery.toLocaleLowerCase())&&(reviewPlaylist||filter==='all'||row.status==='missing'))||[]
+  const results=job?.rows.map((row,index)=>({row,index})).filter(({row})=>`${row.song.title} ${row.song.artists.join(' ')}`.toLocaleLowerCase().includes(resultQuery.toLocaleLowerCase())&&(filter==='all'||row.status==='missing'))||[]
   return <div className={`playlist-import-backdrop${page==='sources'?' source-picker':''}`} onClick={event=>{if(event.target===event.currentTarget)dismiss()}}>
     <div ref={dialog} className="playlist-import-dialog" role="dialog" aria-modal="true" aria-label={reviewPlaylist?'重新匹配视频':'导入歌单'} tabIndex={-1} onKeyDown={event=>{
       if(event.key==='Escape'){event.stopPropagation();dismiss()}
@@ -144,11 +141,12 @@ export function ImportFavorites({onClose,onImported,reviewPlaylist}:{onClose:()=
     }}>
       <header className="import-header"><div>{page!=='sources'&&page!=='progress'&&<button className="import-icon" disabled={busy} aria-label="返回导入来源" onClick={()=>{setPage('sources');setError('');setBiliStatus('')}}><ArrowLeft size={20}/></button>}<h2>{title}</h2></div><button className="import-icon" aria-label={reviewPlaylist?'关闭重新匹配':running?'收起导入进度':'关闭导入'} title={running?'收起后继续导入':undefined} onClick={dismiss}>{running?<Minus size={20}/>:<X size={20}/>}</button></header>
       <div className="import-body">
-        {page==='sources'&&<><div className="import-sources">{sources.map(source=><button key={source.id} type="button" onClick={()=>{setPage(source.id);setInput('');setName('');setError('')}}><span className={`import-source-mark source-${source.id}`}>{source.id==='text'?<FileText size={21}/>:source.mark}</span><span><strong>{source.title}</strong><small>{source.description}</small></span><ChevronRight size={18}/></button>)}</div><p className="import-hint">网易云、QQ 音乐和文本列表会自动匹配 B 站资源。</p></>}
-        {(page==='netease'||page==='qq'||page==='text')&&<form id="external-playlist-form" onSubmit={event=>{event.preventDefault();void startExternal()}} className="import-source-form">
-          <div className="import-form-heading"><span className={`import-source-mark source-${page}`}>{page==='text'?<FileText size={20}/>:page==='qq'?'Q':'网'}</span><div><strong>{page==='text'?'粘贴歌曲列表':'粘贴歌单分享链接'}</strong><p>{page==='text'?'每行一首，例如：传奇 - 王菲':'支持完整分享文字和短链接，无需登录音乐平台。'}</p></div></div>
-          <label htmlFor="playlist-import-input" className="sr-only">{page==='text'?'歌曲列表':'歌单链接'}</label><textarea id="playlist-import-input" autoFocus required disabled={busy} value={input} onChange={event=>setInput(event.target.value)} placeholder={page==='text'?'传奇 - 王菲\n因为爱情 - 陈奕迅 / 王菲':'在这里粘贴歌单链接或分享文字…'} rows={page==='text'?7:4} maxLength={page==='text'?1_000_000:16_000}/>
-          <label className="import-name-field">歌单名称 <span>选填</span><input maxLength={80} value={name} disabled={busy} onChange={event=>setName(event.target.value)} placeholder="默认沿用原歌单名称"/></label><div className="import-note"><Music2 size={18}/><p>自动匹配并保存，未找到的歌曲会跳过。导入后仍可更换版本。</p></div>
+        {page==='sources'&&<><div className="import-sources">{sources.map(source=><button key={source.id} type="button" onClick={()=>{setPage(source.id);setInput('');setName('');setError('')}}><span className={`import-source-mark source-${source.id}`}>{source.id==='text'?<FileText size={21}/>:source.id==='online'?<Link2 size={21}/>:<FolderHeart size={21}/>}</span><span><strong>{source.title}</strong><small>{source.description}</small></span><ChevronRight size={18}/></button>)}</div></>}
+        {(page==='online'||page==='text')&&<form id="external-playlist-form" onSubmit={event=>{event.preventDefault();void startExternal()}} className="import-source-form">
+          <div className="import-form-heading"><span className={`import-source-mark source-${page}`}>{page==='text'?<FileText size={20}/>:<Link2 size={20}/>}</span><div><strong>{page==='text'?'粘贴歌曲列表':'粘贴歌单分享链接'}</strong><p>{page==='text'?'每行一首，例如：传奇 - 王菲':'支持完整分享文字和短链接，无需登录音乐平台。'}</p></div></div>
+          <label htmlFor="playlist-import-input" className="sr-only">{page==='text'?'歌曲列表':'歌单链接'}</label><textarea id="playlist-import-input" autoFocus required disabled={busy} value={input} onChange={event=>setInput(event.target.value)} placeholder={page==='text'?'传奇 - 王菲\n因为爱情 - 陈奕迅 / 王菲':'支持网易云、QQ 音乐、酷狗、酷我、咪咕，粘贴歌单链接或分享文字…'} rows={page==='text'?7:4} maxLength={page==='text'?1_000_000:16_000}/>
+          {page==='online'&&playlistLinkPlatform(input)&&<p className="import-detected-source"><Check size={14}/>已识别：{playlistLinkPlatform(input)}</p>}
+          <label className="import-name-field">歌单名称 <span>选填</span><input maxLength={80} value={name} disabled={busy} onChange={event=>setName(event.target.value)} placeholder={page==='text'?'为这份歌单命名':'默认沿用原歌单名称'}/></label>
         </form>}
         {page==='bili'&&<>
           <div className="bili-copy-setting"><div><strong id="bili-copy-label">复制为本地歌单</strong><small>{mode==='copy'?'复制到“歌单”，之后独立管理。':'保存到“歌单”，与 B 站保持同步。'}</small></div><button className="bili-copy-switch" type="button" role="switch" aria-labelledby="bili-copy-label" aria-checked={mode==='copy'} disabled={busy} onClick={()=>{setMode(mode==='copy'?'link':'copy');setBiliResults([]);setBiliStatus('');setPartialId('')}}><span/></button></div>
@@ -158,9 +156,9 @@ export function ImportFavorites({onClose,onImported,reviewPlaylist}:{onClose:()=
         </>}
         {page==='progress'&&job&&<>
           <div className="import-progress-card"><div className="import-progress-heading"><span className={`import-source-mark source-${job.source}`}>{reviewPlaylist?<RefreshCw size={21}/>:<ListPlus size={21}/>}</span><div><h3>{job.name}</h3><p>{reviewPlaylist?`共 ${job.rows.length} 首 · 选择歌曲后重新搜索`:`共 ${job.rows.length} 首 · 已保存 ${saved} 首${missing?` · 未匹配 ${missing} 首`:''}`}</p></div>{!reviewPlaylist&&(running?<LoaderCircle size={20} className="spin"/>:job.state==='done'?<Check size={22}/>:<Pause size={20}/>)}</div>{reviewPlaylist?<p className="import-review-note">只替换当前歌单中的视频，歌名、封面和其他收藏保留。</p>:<><progress max={job.rows.length} value={processed}/><p role="status">{job.message}</p>{job.state!=='done'&&<small>收起后可继续导入；结束导入会保留已经保存的歌曲。</small>}</>}</div>
-          <div className="import-result-tools">{!reviewPlaylist&&<div role="group" aria-label="筛选导入结果"><button aria-pressed={filter==='all'} onClick={()=>{setFilter('all');setVisible(40)}}>全部</button><button aria-pressed={filter==='missing'} onClick={()=>{setFilter('missing');setVisible(40)}}>未匹配{missing?` ${missing}`:''}</button></div>}<label className="import-review-search"><span className="import-search-icon"><Search size={16}/></span><input aria-label="搜索歌单中的歌曲" placeholder="搜索歌单中的歌曲" value={resultQuery} onChange={event=>{setResultQuery(event.target.value);setVisible(40)}}/>{resultQuery&&<button type="button" className="import-search-clear" aria-label="清空歌单搜索" onClick={()=>{setResultQuery('');setVisible(40)}}><X size={14}/></button>}</label></div>
+          <div className="import-result-tools">{<div role="group" aria-label="筛选导入结果"><button aria-pressed={filter==='all'} onClick={()=>{setFilter('all');setVisible(40)}}>全部</button><button aria-pressed={filter==='missing'} onClick={()=>{setFilter('missing');setVisible(40)}}>未匹配{missing?` ${missing}`:''}</button></div>}<label className="import-review-search"><span className="import-search-icon"><Search size={16}/></span><input aria-label="搜索歌单中的歌曲" placeholder="搜索歌单中的歌曲" value={resultQuery} onChange={event=>{setResultQuery(event.target.value);setVisible(40)}}/>{resultQuery&&<button type="button" className="import-search-clear" aria-label="清空歌单搜索" onClick={()=>{setResultQuery('');setVisible(40)}}><X size={14}/></button>}</label></div>
           <div className="import-results">{results.slice(0,visible).map(({row,index})=><div className="import-result" key={row.song.sourceId}>
-            <div className="import-result-line"><span className="import-result-index">{index+1}</span><Artwork src={row.song.coverUrl||row.chosen?.track.coverUrl} fallback={<Music2 size={18}/>} className="import-result-art"/><div className="import-result-copy"><strong>{row.song.title}</strong><small>{row.song.artists.join(' / ')||'歌手未知'}{row.song.durationSeconds?` · ${formatDuration(row.song.durationSeconds)}`:''}</small></div>{!reviewPlaylist&&<span className={`import-result-status status-${row.status}`}>{row.status==='saved'?'已导入':row.status==='matched'?'已匹配':row.status==='missing'?'未匹配':'等待'}</span>}<button className="import-edit-choice" disabled={running||(manualBusy&&expanded!==index)} onClick={()=>expandRow(index)}><RefreshCw size={13}/><span>{expanded===index?'收起':row.status==='missing'?'查找':'更换'}</span></button></div>
+            <div className="import-result-line"><span className="import-result-index">{index+1}</span><Artwork src={row.song.coverUrl||row.chosen?.track.coverUrl} fallback={<Music2 size={18}/>} className="import-result-art"/><div className="import-result-copy"><strong>{row.song.title}</strong><small>{row.song.artists.join(' / ')||'歌手未知'}{row.song.durationSeconds?` · ${formatDuration(row.song.durationSeconds)}`:''}</small></div>{<span className={`import-result-status status-${row.status}`}>{row.status==='saved'?'已导入':row.status==='matched'?'已匹配':row.status==='missing'?'未匹配':'等待'}</span>}<button className="import-edit-choice" disabled={running||(manualBusy&&expanded!==index)} onClick={()=>expandRow(index)}><RefreshCw size={13}/><span>{expanded===index?'收起':row.status==='missing'?'查找':'更换'}</span></button></div>
             {expanded===index&&<div className="import-candidate-panel"><form onSubmit={event=>{event.preventDefault();void manualSearch()}}><Search size={16}/><input aria-label="搜索其他歌曲版本" value={keyword} onChange={event=>setKeyword(event.target.value)}/><button disabled={manualBusy||!keyword.trim()} type="submit">{manualBusy?<LoaderCircle size={16} className="spin"/>:'搜索'}</button></form>{manualChoices.map(choice=><div className="import-candidate" key={choice.track.id}><button className="import-preview" aria-label={`试听 ${choice.track.title}`} onClick={()=>void usePlayerStore.getState().play(choice.track)}><Play size={15}/></button><div><strong>{choice.track.title}</strong><small>{choice.track.source.uploaderName} · {formatDuration(choice.track.durationSeconds)}</small></div><button className="import-use" disabled={manualBusy||row.chosen?.track.id===choice.track.id} onClick={()=>void choose(choice)}>{row.chosen?.track.id===choice.track.id?<><Check size={14}/><span>已选</span></>:<><Check size={14}/><span>使用</span></>}</button></div>)}{!manualBusy&&!manualChoices.length&&<p className="import-hint">换个关键词，查找其他版本。</p>}</div>}
           </div>)}{results.length>visible&&<button className="import-show-more" onClick={()=>setVisible(value=>value+40)}>显示更多歌曲</button>}{!results.length&&<p className="import-hint">{filter==='missing'?'暂时没有未匹配的歌曲。':'等待导入结果。'}</p>}</div>
         </>}
@@ -173,7 +171,7 @@ export function ImportFavorites({onClose,onImported,reviewPlaylist}:{onClose:()=
           {job.state==='done'&&missing>0&&<button className="import-secondary" onClick={()=>void runPlaylistImport(true).then(()=>refresh())}><RefreshCw size={15}/>重试未匹配</button>}
           {job.state!=='done'&&<button className="import-secondary" onClick={endImport} title="保留已保存的歌曲，停止后续导入"><Square size={14}/>结束导入</button>}
           {saved>0&&<button className={job.state==='done'?'import-primary':'import-secondary'} onClick={()=>{void refresh();onImported(job.playlistId,'copy')}}>打开歌单<ArrowRight size={16}/></button>}
-        </>:page==='bili'?<><small>{folderIds.size?`已选 ${folderIds.size} 个收藏夹`:'导入到我的歌单'}</small>{busy&&<button className="import-secondary" onClick={dismiss}><Square size={14}/>结束导入</button>}{partialId&&!busy&&<button className="import-secondary" onClick={()=>onImported(partialId,'copy')}>打开歌单<ArrowRight size={16}/></button>}<button className="import-primary" disabled={busy||!folderIds.size} onClick={()=>void importBili()}>{busy?<LoaderCircle size={17} className="spin"/>:mode==='copy'?<ListPlus size={17}/>:<Link2 size={17}/>} {busy?'正在处理…':biliResults.some(result=>result.error)?'重试所选':mode==='copy'?'导入歌单':'关联收藏夹'}</button></>:<><small>自动匹配，无需逐首确认</small><button className="import-primary" type="submit" form="external-playlist-form" disabled={busy||!input.trim()||!scope}>{busy?<LoaderCircle size={17} className="spin"/>:<ListPlus size={18}/>} {busy?'读取歌单中…':'开始导入'}</button></>}
+        </>:page==='bili'?<><small>{folderIds.size?`已选 ${folderIds.size} 个收藏夹`:'导入到我的歌单'}</small>{busy&&<button className="import-secondary" onClick={dismiss}><Square size={14}/>结束导入</button>}{partialId&&!busy&&<button className="import-secondary" onClick={()=>onImported(partialId,'copy')}>打开歌单<ArrowRight size={16}/></button>}<button className="import-primary" disabled={busy||!folderIds.size} onClick={()=>void importBili()}>{busy?<LoaderCircle size={17} className="spin"/>:mode==='copy'?<ListPlus size={17}/>:<Link2 size={17}/>} {busy?'正在处理…':biliResults.some(result=>result.error)?'重试所选':mode==='copy'?'导入歌单':'关联收藏夹'}</button></>:<><span/><button className="import-primary" type="submit" form="external-playlist-form" disabled={busy||!input.trim()||!scope}>{busy?<LoaderCircle size={17} className="spin"/>:<ListPlus size={18}/>} {busy?'读取歌单中…':'开始导入'}</button></>}
       </footer>}
     </div>
   </div>

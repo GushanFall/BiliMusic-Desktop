@@ -370,7 +370,7 @@ pub fn query(c: &Connection, directory: &std::path::Path, uid: &str) -> Result<V
             let fallback=names.get(&id).cloned().unwrap_or(("已移除的歌曲".into(),String::new()));
             let (title,artist,cover)=c.query_row("SELECT COALESCE(m.title,t.title),COALESCE(m.artist,t.artist,''),COALESCE(m.cover_url,t.cover_url,'') FROM tracks t LEFT JOIN metadata_overrides m ON m.track_id=t.id WHERE t.id=?1",[&id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap_or((fallback.0,fallback.1,String::new()));
             // Cached source titles also cover statistics-only songs absent from this library.
-            let title = c.query_row("SELECT COALESCE(NULLIF((SELECT title FROM metadata_overrides WHERE track_id=?1),''),(SELECT value FROM sync_info WHERE key='source-title:'||?1),?2)",params![id,title],|r|r.get::<_,String>(0)).unwrap_or(title);
+            let title = c.query_row("SELECT COALESCE((SELECT value FROM sync_info WHERE key='source-title:'||?1),NULLIF((SELECT title FROM metadata_overrides WHERE track_id=?1),''),?2)",params![id,title],|r|r.get::<_,String>(0)).unwrap_or(title);
             json!({"id":id,"title":title,"artist":artist,"coverUrl":cover,"seconds":seconds})
         }).collect();
         result[period] =

@@ -1,3 +1,5 @@
+#[cfg(target_os = "android")]
+mod android_playback;
 #[cfg(desktop)]
 mod desktop_media;
 mod domain;
@@ -8,15 +10,14 @@ mod infrastructure;
 mod interface;
 #[cfg(target_os = "ios")]
 mod ios_playback;
-#[cfg(any(target_os = "ios", target_os = "android", test))]
-mod native_playback;
-#[cfg(target_os = "android")]
-mod android_playback;
 #[cfg(desktop)]
 mod mini_player;
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+mod native_playback;
 #[cfg(target_env = "ohos")]
 mod ohos_playback;
 mod sync;
+mod window_lifecycle;
 
 use infrastructure::database::Database;
 use infrastructure::media_proxy::MediaProxy;
@@ -53,6 +54,7 @@ pub fn run() {
                 .with_denylist(&["floating-lyrics-unlock"])
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .build(),
@@ -122,6 +124,21 @@ pub fn run() {
                     .tooltip("BiliMusic")
                     .menu(&menu)
                     .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        #[cfg(target_os = "windows")]
+                        if matches!(
+                            event,
+                            tauri::tray::TrayIconEvent::Click {
+                                button: tauri::tray::MouseButton::Left,
+                                button_state: tauri::tray::MouseButtonState::Up,
+                                ..
+                            }
+                        ) {
+                            show_main_window(tray.app_handle());
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        let _ = (tray, event);
+                    })
                     .on_menu_event(|app, event| match event.id.as_ref() {
                         "show" => {
                             show_main_window(app);
@@ -174,6 +191,7 @@ pub fn run() {
             mini_player::desktop_mini_panel,
             interface::playlist_import::external_playlist_read,
             interface::playlist_import::playlist_import_scope,
+            interface::playlist_import::playlist_import_archive,
             interface::playlist_import::playlist_import_commit,
             global_shortcuts::global_shortcuts_apply,
             interface::media::bili_creator_catalog,
@@ -267,24 +285,25 @@ pub fn run() {
             interface::commands::android_download_destination,
             #[cfg(any(target_os = "android", target_os = "ios"))]
             interface::commands::mobile_export_download,
+            window_lifecycle::window_close_to_tray,
             interface::commands::downloads_list,
             interface::commands::download_remove,
             interface::commands::download_track,
         ])
         .on_window_event(|window, event| {
-            #[cfg(target_os = "macos")]
+            #[cfg(desktop)]
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    // A floating lyric window keeps the process alive. Destroying
-                    // main would otherwise leave Dock/tray with nothing to show.
+                    // Keep the main WebView alive when hiding; otherwise exit the
+                    // whole application, including lyrics and the tray icon.
                     api.prevent_close();
                     let window = window.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = window.hide();
+                        window_lifecycle::close_main(&window);
                     });
                 }
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(mobile)]
             let _ = (window, event);
         })
         .build(tauri::generate_context!())
